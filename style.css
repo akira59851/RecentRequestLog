@@ -1,0 +1,599 @@
+/* ============================================================
+   最近请求记录 (Recent Request Log) — SillyTavern 第三方插件样式
+   ============================================================ */
+
+/* ── 框架：面板容器 (明亮主题默认) ─────────────── */
+#rlog-panel {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 750px;
+    max-width: 95vw;
+    max-height: 80vh;
+    background: #f5f5f5;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    z-index: 9000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, 'Microsoft YaHei', sans-serif;
+    color: #333;
+}
+
+/* ── 面板头部 ─────────────────────────────────────── */
+.rlog-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #e8e8e8;
+    border-bottom: 1px solid #ccc;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.rlog-panel-header h4 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #222;
+    cursor: pointer;
+    transition: color 0.15s;
+}
+.rlog-panel-header h4:hover { color: #1a6fa0; }
+
+.rlog-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.rlog-header-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #666;
+    font-size: 15px;
+    cursor: pointer;
+    padding: 3px 7px;
+    line-height: 1;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.rlog-header-btn:hover { color: #111; background: rgba(0,0,0,0.04); border-color: #bbb; }
+
+/* fetch 拦截开关包装 */
+.rlog-fetch-toggle-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: default;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.rlog-fetch-toggle-wrapper:hover {
+    background: rgba(0,0,0,0.04);
+}
+
+.rlog-fetch-toggle-btn {
+    padding: 1px 3px !important;
+    font-size: 18px !important;
+}
+
+.rlog-fetch-toggle-btn.rlog-fetch-on {
+    color: #2b8c34 !important;
+}
+
+.rlog-fetch-label {
+    font-size: 11px;
+    color: #888;
+    white-space: nowrap;
+    user-select: none;
+}
+
+#rlog-close-btn {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 6px;
+    line-height: 1;
+}
+#rlog-close-btn:hover { color: #c33; }
+
+/* ── 面板主体（包裹列表和 resize 角标） ────────── */
+.rlog-panel-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* 窗口折叠状态：隐藏整个 body，只保留标题栏 */
+.rlog-window-collapsed .rlog-panel-body {
+    display: none;
+}
+
+/* ── 列表区域（可滚动） ──────────────────────────── */
+.rlog-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 12px;
+}
+
+.rlog-empty {
+    text-align: center;
+    color: #999;
+    padding: 50px 0;
+    font-size: 14px;
+}
+
+/* ── 右下角 resize 角标 ─────────────────────────── */
+.rlog-resize-grip {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 2px 8px 4px 0;
+    cursor: nwse-resize;
+    color: #bbb;
+    font-size: 14px;
+    user-select: none;
+    border-top: 1px solid #ddd;
+    background: #f0f0f0;
+}
+.rlog-resize-grip:hover { color: #666; }
+
+/* ── 单条记录 ─────────────────────────────────────── */
+.rlog-record {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    overflow: hidden;
+}
+
+/* 记录头部 */
+.rlog-record-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+.rlog-record-header:hover {
+    background: rgba(0,0,0,0.02);
+}
+
+.rlog-record-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.rlog-char-name {
+    font-weight: 600;
+    color: #1a6fa0;
+    font-size: 13px;
+}
+
+.rlog-time {
+    color: #888;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.rlog-total-tokens {
+    color: #777;
+    font-size: 11px;
+    background: #eee;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.rlog-record-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.rlog-copy-all-btn {
+    padding: 3px 10px;
+    background: #e0e0e0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    color: #444;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.rlog-copy-all-btn:hover { background: #d0d0d0; border-color: #aaa; }
+
+.rlog-toggle-icon {
+    color: #999;
+    font-size: 14px;
+    transition: transform 0.25s ease;
+    width: 20px;
+    text-align: center;
+}
+
+/* 记录折叠/展开状态 */
+.rlog-record.collapsed .rlog-record-body { display: none; }
+.rlog-record.collapsed .rlog-toggle-icon { transform: rotate(-90deg); }
+.rlog-record.expanded .rlog-toggle-icon { transform: rotate(0deg); }
+
+/* ── 记录内部消息列表（带滚动条） ────────────────── */
+.rlog-record-body {
+    border-top: 1px solid #e0e0e0;
+    padding: 8px 10px;
+    background: #fafafa;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.rmsg-item {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+    margin-bottom: 8px;
+    overflow: hidden;
+}
+.rmsg-item:last-child { margin-bottom: 0; }
+
+/* 消息头部 */
+.rmsg-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: #f7f7f7;
+    border-bottom: 1px solid #e0e0e0;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+.rmsg-header:hover { background: #f0f0f0; }
+
+/* 消息折叠图标 */
+.rmsg-expand-icon {
+    color: #999;
+    font-size: 11px;
+    width: 14px;
+    text-align: center;
+    transition: transform 0.25s ease;
+}
+.rmsg-item.collapsed .rmsg-expand-icon { transform: rotate(0deg); }
+.rmsg-item.expanded .rmsg-expand-icon { transform: rotate(90deg); }
+
+.rmsg-role-badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.rmsg-tokens {
+    font-size: 11px;
+    color: #888;
+    margin-left: auto;
+}
+
+.rmsg-copy-btn {
+    background: none;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    color: #666;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 1px 6px;
+    transition: background 0.15s, color 0.15s;
+}
+.rmsg-copy-btn:hover { background: #e0e0e0; color: #222; }
+
+/* 消息折叠状态 */
+.rmsg-item.collapsed .rmsg-content { display: none; }
+
+/* ── 角色标签：半透明背景 + 匹配色系文字 ──────── */
+.role-system {
+    background: rgba(107, 76, 154, 0.15);
+    color: #6b4c9a;
+}
+.role-user {
+    background: rgba(45, 122, 156, 0.15);
+    color: #2d7a9c;
+}
+.role-assistant {
+    background: rgba(58, 125, 68, 0.15);
+    color: #3a7d44;
+}
+.role-tool {
+    background: rgba(138, 109, 59, 0.15);
+    color: #8a6d3b;
+}
+.role-other {
+    background: rgba(102, 102, 102, 0.15);
+    color: #666;
+}
+
+/* 消息内容 */
+.rmsg-content {
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #444;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #fafafa;
+}
+
+/* ── 复制反馈 ────────────────────────────────────── */
+.copy-success { border-color: #3a3 !important; background: #e3f5e3 !important; }
+.copy-fail { border-color: #a33 !important; background: #f5e3e3 !important; }
+
+/* ── 滚动条 (明亮) ──────────────────────────────── */
+.rlog-list::-webkit-scrollbar,
+.rmsg-content::-webkit-scrollbar,
+.rlog-record-body::-webkit-scrollbar { width: 6px; }
+.rlog-list::-webkit-scrollbar-track,
+.rmsg-content::-webkit-scrollbar-track,
+.rlog-record-body::-webkit-scrollbar-track { background: transparent; }
+.rlog-list::-webkit-scrollbar-thumb,
+.rmsg-content::-webkit-scrollbar-thumb,
+.rlog-record-body::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+.rlog-list::-webkit-scrollbar-thumb:hover,
+.rmsg-content::-webkit-scrollbar-thumb:hover,
+.rlog-record-body::-webkit-scrollbar-thumb:hover { background: #aaa; }
+
+/* ── 总开关按钮 ──────────────────────────────── */
+.rlog-master-on {
+    color: #4caf50;
+}
+.rlog-master-off {
+    color: #999;
+}
+
+/* ── 响应式 ──────────────────────────────────────── */
+@media (max-width: 768px) {
+    #rlog-panel {
+        width: 100vw;
+        max-width: 100vw;
+        max-height: 75vh;
+        top: 40px;
+        border-radius: 6px;
+    }
+    .rlog-panel-header {
+        padding: 8px 10px;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    .rlog-panel-header h4 {
+        font-size: 13px;
+    }
+    .rlog-header-actions {
+        gap: 3px;
+    }
+    .rlog-header-btn {
+        font-size: 13px;
+        padding: 2px 5px;
+    }
+    .rlog-record-info {
+        gap: 6px;
+    }
+    .rlog-char-name { font-size: 12px; }
+    .rlog-time { font-size: 11px; }
+    .rlog-total-tokens { font-size: 10px; padding: 1px 6px; }
+    .rlog-copy-all-btn {
+        font-size: 11px;
+        padding: 2px 8px;
+    }
+    .rlog-toggle-icon { font-size: 12px; width: 16px; }
+    .rlog-record-body {
+        max-height: 250px;
+        padding: 4px 6px;
+    }
+    .rmsg-header {
+        gap: 6px;
+        padding: 4px 6px;
+    }
+    .rmsg-role-badge {
+        font-size: 10px;
+        padding: 1px 5px;
+    }
+    .rmsg-tokens { font-size: 10px; }
+    .rmsg-copy-btn {
+        font-size: 11px;
+        padding: 1px 5px;
+    }
+    .rmsg-content {
+        font-size: 11px;
+        padding: 6px 8px;
+        max-height: 150px;
+    }
+    .rlog-fetch-label { font-size: 10px; }
+    .rlog-fetch-toggle-btn { font-size: 16px !important; }
+    .rlog-resize-grip {
+        font-size: 12px;
+        padding: 2px 6px 3px 0;
+    }
+    .rlog-list {
+        padding: 6px 8px;
+    }
+    .rlog-record {
+        margin-bottom: 6px;
+    }
+}
+
+/* ============================================================
+   暗色主题 (夜间模式 / Deep Charcoal Blue)
+   通过移除 rlog-light 类来切换（即默认明亮，切换后变暗）
+   ============================================================ */
+#rlog-panel:not(.rlog-light) {
+    background: #1a1d28;
+    border-color: #3a3d4a;
+    color: #c8ccd4;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-panel-header {
+    background: #222636;
+    border-bottom-color: #3a3d4a;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-panel-header h4 {
+    color: #d8dbe2;
+}
+#rlog-panel:not(.rlog-light) .rlog-panel-header h4:hover { color: #7eb8da; }
+
+#rlog-panel:not(.rlog-light) .rlog-header-btn {
+    color: #888;
+}
+#rlog-panel:not(.rlog-light) .rlog-header-btn:hover {
+    color: #ccc;
+    background: rgba(255,255,255,0.06);
+    border-color: #5a5d6a;
+}
+
+#rlog-panel:not(.rlog-light) #rlog-close-btn { color: #888; }
+#rlog-panel:not(.rlog-light) #rlog-close-btn:hover { color: #f66; }
+
+#rlog-panel:not(.rlog-light) .rlog-empty { color: #666; }
+
+/* 暗色 resize grip */
+#rlog-panel:not(.rlog-light) .rlog-resize-grip {
+    color: #555;
+    border-top-color: #3a3d4a;
+    background: #1a1d28;
+}
+#rlog-panel:not(.rlog-light) .rlog-resize-grip:hover { color: #999; }
+
+/* 暗色记录 */
+#rlog-panel:not(.rlog-light) .rlog-record {
+    background: #222636;
+    border-color: #3a3d4a;
+}
+#rlog-panel:not(.rlog-light) .rlog-record-header:hover {
+    background: rgba(255,255,255,0.03);
+}
+#rlog-panel:not(.rlog-light) .rlog-char-name { color: #7eb8da; }
+#rlog-panel:not(.rlog-light) .rlog-time { color: #888; }
+#rlog-panel:not(.rlog-light) .rlog-total-tokens {
+    color: #888;
+    background: #2a2d3c;
+}
+#rlog-panel:not(.rlog-light) .rlog-toggle-icon { color: #888; }
+
+#rlog-panel:not(.rlog-light) .rlog-copy-all-btn {
+    background: #2e3345;
+    border-color: #4a4d5a;
+    color: #bbb;
+}
+#rlog-panel:not(.rlog-light) .rlog-copy-all-btn:hover {
+    background: #3a3f54;
+    border-color: #6a6d7a;
+}
+
+/* 暗色消息 */
+#rlog-panel:not(.rlog-light) .rlog-record-body {
+    background: #1a1d28;
+    border-top-color: #3a3d4a;
+}
+#rlog-panel:not(.rlog-light) .rmsg-item {
+    background: #252836;
+    border-color: #3a3d4a;
+}
+#rlog-panel:not(.rlog-light) .rmsg-header {
+    background: rgba(0,0,0,0.15);
+    border-bottom-color: #3a3d4a;
+}
+#rlog-panel:not(.rlog-light) .rmsg-header:hover {
+    background: rgba(255,255,255,0.03);
+}
+#rlog-panel:not(.rlog-light) .rmsg-expand-icon { color: #888; }
+#rlog-panel:not(.rlog-light) .rmsg-tokens { color: #888; }
+#rlog-panel:not(.rlog-light) .rmsg-copy-btn {
+    border-color: #4a4d5a;
+    color: #999;
+}
+#rlog-panel:not(.rlog-light) .rmsg-copy-btn:hover {
+    background: #3a3f54;
+    color: #ccc;
+}
+#rlog-panel:not(.rlog-light) .rmsg-content {
+    color: #bbb;
+    background: #1a1d28;
+}
+
+/* 暗色角色标签：更亮一些的文字以保证可读性 */
+#rlog-panel:not(.rlog-light) .role-system {
+    background: rgba(160, 130, 200, 0.18);
+    color: #c0b0e0;
+}
+#rlog-panel:not(.rlog-light) .role-user {
+    background: rgba(80, 170, 210, 0.18);
+    color: #70b8d8;
+}
+#rlog-panel:not(.rlog-light) .role-assistant {
+    background: rgba(90, 180, 100, 0.18);
+    color: #80c890;
+}
+#rlog-panel:not(.rlog-light) .role-tool {
+    background: rgba(180, 145, 80, 0.18);
+    color: #c8a860;
+}
+#rlog-panel:not(.rlog-light) .role-other {
+    background: rgba(150, 150, 150, 0.18);
+    color: #aaa;
+}
+
+/* 暗色复制反馈 */
+#rlog-panel:not(.rlog-light) .copy-success { border-color: #3a3 !important; background: #263a26 !important; }
+#rlog-panel:not(.rlog-light) .copy-fail { border-color: #a33 !important; background: #3a2626 !important; }
+
+/* 暗色总开关 */
+#rlog-panel:not(.rlog-light) .rlog-master-on {
+    color: #4caf50;
+}
+#rlog-panel:not(.rlog-light) .rlog-master-off {
+    color: #999;
+}
+
+/* 暗色 fetch 拦截相关 */
+#rlog-panel:not(.rlog-light) .rlog-fetch-toggle-wrapper:hover {
+    background: rgba(255,255,255,0.06);
+}
+#rlog-panel:not(.rlog-light) .rlog-fetch-toggle-btn.rlog-fetch-on {
+    color: #5acc5a !important;
+}
+#rlog-panel:not(.rlog-light) .rlog-fetch-label {
+    color: #999;
+}
+
+/* 暗色滚动条 */
+#rlog-panel:not(.rlog-light) .rlog-list::-webkit-scrollbar-thumb,
+#rlog-panel:not(.rlog-light) .rmsg-content::-webkit-scrollbar-thumb,
+#rlog-panel:not(.rlog-light) .rlog-record-body::-webkit-scrollbar-thumb {
+    background: #444;
+}
+#rlog-panel:not(.rlog-light) .rlog-list::-webkit-scrollbar-thumb:hover,
+#rlog-panel:not(.rlog-light) .rmsg-content::-webkit-scrollbar-thumb:hover,
+#rlog-panel:not(.rlog-light) .rlog-record-body::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
