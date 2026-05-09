@@ -23,7 +23,7 @@
 点击顶部 `扩展程序` 菜单 -> `安装扩展程序` -> 复制粘贴以下网址 -> `给所有人安装` -> 成功后刷新 SillyTavern 页面
 
 ```
-SillyTavern-release/public/scripts/extensions/third-party/
+https://github.com/akira59851/RecentRequestLog
 ```
 
 ---
