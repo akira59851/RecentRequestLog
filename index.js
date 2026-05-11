@@ -6,7 +6,7 @@
  * 然后启动或刷新 SillyTavern 即可。
  *
  * 功能:
- *  - 静默抓取每次发送给 AI 的完整提示词（原生请求 + 第三方插件请求）
+ *  - 静默抓取每次发送给 AI 的完整提示词
  *  - 按角色分组展示每条消息，估算 tokens
  *  - 记录默认折叠，点击展开/收起
  *  - 消息默认折叠，点击各消息标题展开/收起
@@ -16,7 +16,7 @@
  *  - 可清空全部记录
  *  - 昼/夜模式切换 (持久化)
  *  - 点击标题栏一键展开/折叠全部记录
- *  - fetch 请求拦截：捕获绕过 SillyTavern 直接发出的 AI 请求（可开关）
+ *  - 通过网络层拦截 fetch 请求捕获实际发送给 AI 的提示词
  */
 
 
@@ -24,7 +24,6 @@
 const PLUGIN_KEY = 'RecentRequestLog';
 const MAX_RECORDS = 10;
 const STORAGE_THEME_KEY = `${PLUGIN_KEY}_theme`;
-const STORAGE_FETCH_INTERCEPTION_KEY = `${PLUGIN_KEY}_fetchInterception`;
 const STORAGE_MASTER_KEY = `${PLUGIN_KEY}_masterEnabled`;
 
 // ── 延迟初始化的 ST 引用 ──────────────────────────
@@ -52,7 +51,7 @@ let isLightTheme = false;
 /** @type {boolean} 面板窗口是否折叠 */
 let isPanelCollapsed = false;
 
-/** @type {boolean} 插件总开关是否启用（持久化到 localStorage） */
+/** @type {boolean} 插件总开关是否启用（持久化到 localStorage，首次安装默认开启） */
 let masterEnabled = true;
 
 // 面板拖拽/缩放相关
@@ -63,26 +62,17 @@ let resizeStartW = 0;
 let resizeStartH = 0;
 
 // ── fetch 拦截相关状态 ─────────────────────────
-/** @type {boolean} fetch 拦截是否启用 */
-let fetchInterceptionEnabled = false;
+/** @type {Function|null} 原始 window.fetch 的引用 */
+let originalFetch = null;
 
-/** @type {Function|null} 保存的当前 window.fetch（可能已被其他插件包装过） */
-let savedFetch = null;
+/** @type {Function|null} 当前安装的 fetch 包装函数 */
+let currentHook = null;
 
-/** @type {number} 上次 ST 原生事件抓取的时间戳（用于防重复） */
-let lastStPromptTimestamp = 0;
+/** @type {string|null} 上一次记录的 messages 指纹，用于去重 */
+let lastRecordFingerprint = null;
 
-/** @type {string|null} 上次 ST 原生事件抓取的内容指纹 */
-let lastStPromptFingerprint = null;
-
-/**
- * 计算文本指纹（用于去重）
- */
-function computeTextFingerprint(text) {
-    if (!text) return '';
-    const normalized = text.replace(/\s+/g, ' ').trim().slice(0, 500);
-    return normalized;
-}
+/** @type {number} 上一次记录的时间戳 */
+let lastRecordTime = 0;
 
 /**
  * 估算文本的 Token 数量
@@ -94,7 +84,7 @@ function estimateTokens(text) {
     let otherChars = 0;
     for (const ch of text) {
         // CJK 统一汉字范围（基本区 + 扩展A + 兼容汉字）
-        if (/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(ch)) {
+        if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(ch)) {
             chineseChars++;
         } else {
             otherChars++;
@@ -159,10 +149,8 @@ function isAiRequestBody(body) {
     if (Array.isArray(body.contents) && body.contents.length > 0) {
         return body.contents.some(item => {
             if (!item || typeof item !== 'object') return false;
-            // 排除 ST 内部消息对象（可能有多余字段混入）
             const itemKeys = Object.keys(item);
             if (itemKeys.some(k => ST_INTERNAL_MSG_KEYS.has(k))) return false;
-            // Gemini 消息有 role 和 parts，或者有 text
             return ('parts' in item && Array.isArray(item.parts) && item.parts.length > 0)
                 || ('text' in item && typeof item.text === 'string' && item.text.length > 0)
                 || (itemKeys.includes('role') && (itemKeys.includes('content') || itemKeys.includes('parts') || itemKeys.includes('text')));
@@ -171,7 +159,6 @@ function isAiRequestBody(body) {
 
     // 4. prompt 字符串 — Text Completions / Oobabooga / KoboldCPP 格式
     if (typeof body.prompt === 'string' && body.prompt.length > 0) {
-        // 排除纯配置中的 prompt 字段（短且无上下文）
         const hasOtherAiKeys = keys.some(k =>
             ['model', 'max_tokens', 'temperature', 'stop', 'top_p', 'stream'].includes(k) ||
             Array.isArray(body[k])
@@ -188,77 +175,37 @@ function isAiRequestBody(body) {
 }
 
 
-// ── ST 原生事件处理 ─────────────────────────────
-
-/**
- * CHAT_COMPLETION_PROMPT_READY: ST 发送 Chat Completions 请求前触发
- * payload: { chat: Array<{role, content}>, dryRun: boolean }
- */
-function onChatCompletionPromptReady(data) {
-    if (data && data.dryRun) return;
-
-    lastStPromptTimestamp = Date.now();
-
-    const characterName = getCurrentCharacterName() || '未知角色';
-
-    const rawMessages = data.chat || data.messages || [];
-    const messages = rawMessages
-        .filter(m => m && typeof m === 'object' && isAiMessageObject(m))
-        .map(m => ({
-            role: normalizeRole(m.role),
-            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
-            tokens: typeof m.tokens === 'number' ? m.tokens : estimateTokens(typeof m.content === 'string' ? m.content : ''),
-            collapsed: true,
-        }));
-
-    // 计算内容指纹用于 fetch 拦截去重
-    const fingerprintText = Array.isArray(data.chat)
-        ? data.chat.map(m => (typeof m === 'string' ? m : (m.content || m.text || ''))).join('||')
-        : '';
-    lastStPromptFingerprint = computeTextFingerprint(fingerprintText);
-
-    if (messages.length > 0) {
-        addRecord(characterName, messages);
-    }
-}
-
-/**
- * GENERATE_AFTER_COMBINE_PROMPTS: ST 发送 Text Completions 请求前触发
- * payload: { prompt: string, dryRun: boolean }
- */
-function onTextCompletionPromptReady(data) {
-    if (data && data.dryRun) return;
-
-    lastStPromptTimestamp = Date.now();
-
-    const characterName = getCurrentCharacterName() || '未知角色';
-    const promptText = data.prompt || '';
-    const messages = [];
-    if (promptText) {
-        messages.push({
-            role: 'user',
-            content: promptText,
-            tokens: estimateTokens(promptText),
-            collapsed: false,
-        });
-    }
-
-    lastStPromptFingerprint = computeTextFingerprint(promptText);
-
-    if (messages.length > 0) {
-        addRecord(characterName, messages);
-    }
-}
-
-
 // ── 数据管理 ────────────────────────────────────
+
+/**
+ * 生成消息列表的去重指纹
+ * 通过拼接每条消息的 role + content 生成一个简单哈希，用于判断两条记录是否内容相同
+ */
+function computeMessagesFingerprint(messages) {
+    if (!messages || messages.length === 0) return '';
+    // 只用前 50 条 + 每条前 500 字符做指纹，避免超大消息拖慢性能
+    return messages.slice(0, 50).map(m => {
+        const role = m.role || '';
+        const content = typeof m.content === 'string' ? m.content.slice(0, 500) : '';
+        return `${role}:${content}`;
+    }).join('|');
+}
 
 function addRecord(characterName, messages) {
     if (!masterEnabled) return;
     if (!characterName || !messages || messages.length === 0) return;
 
-    const now = new Date();
-    const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    // 去重：如果与上一条记录的 messages 内容相同且在 500ms 内，则跳过
+    const fingerprint = computeMessagesFingerprint(messages);
+    const now = Date.now();
+    if (fingerprint && fingerprint === lastRecordFingerprint && (now - lastRecordTime) < 500) {
+        return;
+    }
+    lastRecordFingerprint = fingerprint;
+    lastRecordTime = now;
+
+    const date = new Date();
+    const ts = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
 
     const record = {
         characterName,
@@ -279,8 +226,6 @@ function addRecord(characterName, messages) {
 
 function clearAllRecords() {
     records = [];
-    lastStPromptTimestamp = 0;
-    lastStPromptFingerprint = null;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
     }
@@ -404,7 +349,7 @@ function parseFetchRequestBody(json) {
             messages.push({
                 role: 'system',
                 content: json.system,
-                tokens: estimateTokens(content),
+                tokens: estimateTokens(json.system),
                 collapsed: true,
             });
         }
@@ -414,7 +359,7 @@ function parseFetchRequestBody(json) {
                 messages.push({
                     role: normalizeRole(m.role),
                     content: m.content,
-                    tokens: estimateTokens(content),
+                    tokens: estimateTokens(m.content),
                     collapsed: true,
                 });
             }
@@ -426,7 +371,7 @@ function parseFetchRequestBody(json) {
         messages.push({
             role: 'user',
             content: json.prompt,
-            tokens: estimateTokens(content),
+            tokens: estimateTokens(json.prompt),
             collapsed: false,
         });
     }
@@ -436,41 +381,15 @@ function parseFetchRequestBody(json) {
 }
 
 /**
- * 判断是否与最近一次 ST 原生事件抓取重复（基于内容指纹 + 时间窗口）
- */
-function isDuplicateOfStEvent(body) {
-    const elapsed = Date.now() - lastStPromptTimestamp;
-
-    // 超过 5 秒肯定不是同一次请求
-    if (elapsed > 5000) return false;
-
-    // 3 秒内且指纹匹配
-    if (elapsed <= 3000 && lastStPromptFingerprint) {
-        let currentFingerprint = '';
-        if (body) {
-            const rawMessages = body.messages || body.chat || body.contents || [];
-            const rawText = Array.isArray(rawMessages)
-                ? rawMessages.map(m => (typeof m === 'string' ? m : (m.content || m.text || ''))).join('||')
-                : (body.prompt || '');
-            currentFingerprint = computeTextFingerprint(rawText);
-        }
-        if (currentFingerprint && currentFingerprint === lastStPromptFingerprint) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
- * 安装 fetch 拦截钩子（链式兼容）
+ * 安装 fetch 拦截钩子
+ * 以简单包装方式拦截 window.fetch。由于本插件 loading_order 为 999，
+ * 在安装时其他插件的 fetch 包装链已就绪，originalFetch 捕获的是完整的下游调用链。
  */
 function installFetchHook() {
-    if (!fetchInterceptionEnabled) return;
+    if (currentHook) return; // 已安装
 
-    savedFetch = window.fetch;
-
-    window.fetch = async function hookedFetch(input, init) {
+    originalFetch = window.fetch;
+    currentHook = async function hookedFetch(input, init) {
         let body = null;
 
         // 只拦截 JSON POST 请求
@@ -489,62 +408,39 @@ function installFetchHook() {
                 if (text) {
                     try { body = JSON.parse(text); } catch (e) { body = null; }
                 }
-            } catch (e) { /* body 已被消费 */ }
+            } catch (e) { /* body 可能已被消费 */ }
         }
 
         // 严格请求体验证 — 不依赖 URL
         if (body && isAiRequestBody(body)) {
-            if (!isDuplicateOfStEvent(body)) {
-                const messages = parseFetchRequestBody(body);
-                if (messages) {
-                    const characterName = getCurrentCharacterName();
-                    addRecord(characterName, messages);
-                }
+            const messages = parseFetchRequestBody(body);
+            if (messages) {
+                const characterName = getCurrentCharacterName();
+                addRecord(characterName, messages);
             }
         }
 
-        return savedFetch.call(window, input, init);
+        // 调用原始 fetch（通过闭包保存的引用，避免通过 window.fetch 访问导致递归）
+        return originalFetch.apply(window, [input, init]);
     };
+    window.fetch = currentHook;
 
-    console.log(`[${PLUGIN_KEY}] fetch 拦截已启用（链式兼容模式）`);
+    console.log(`[${PLUGIN_KEY}] fetch 拦截已启用（网络层统一拦截模式）`);
 }
 
 /**
  * 卸载 fetch 拦截钩子
  */
 function uninstallFetchHook() {
-    if (savedFetch) {
-        window.fetch = savedFetch;
-        savedFetch = null;
+    if (!currentHook) return;
+
+    if (originalFetch) {
+        window.fetch = originalFetch;
     }
+    originalFetch = null;
+    currentHook = null;
+
     console.log(`[${PLUGIN_KEY}] fetch 拦截已停用`);
-}
-
-function toggleFetchInterception(enable) {
-    fetchInterceptionEnabled = enable;
-    try {
-        localStorage.setItem(STORAGE_FETCH_INTERCEPTION_KEY, enable ? '1' : '0');
-    } catch (e) { /* ignore */ }
-
-    if (enable) {
-        installFetchHook();
-    } else {
-        uninstallFetchHook();
-    }
-
-    updateFetchToggleUI();
-}
-
-function updateFetchToggleUI() {
-    const btn = panelEl?.querySelector('#rlog-fetch-toggle');
-    if (!btn) return;
-    if (fetchInterceptionEnabled) {
-        btn.classList.add('rlog-fetch-on');
-        btn.querySelector('i').className = 'fa-solid fa-toggle-on';
-    } else {
-        btn.classList.remove('rlog-fetch-on');
-        btn.querySelector('i').className = 'fa-solid fa-toggle-off';
-    }
 }
 
 
@@ -558,15 +454,9 @@ function setMasterEnabled(enabled) {
     updateMasterToggleUI();
 
     if (!enabled) {
-        // 关闭时卸载 fetch 拦截
-        if (fetchInterceptionEnabled) {
-            uninstallFetchHook();
-        }
+        uninstallFetchHook();
     } else {
-        // 开启时恢复 fetch 拦截（仅当用户之前开启了）
-        if (fetchInterceptionEnabled) {
-            installFetchHook();
-        }
+        installFetchHook();
     }
 }
 
@@ -890,6 +780,14 @@ function addMenuEntry() {
     toggleBtn.innerHTML = '<i class="fa-solid fa-book"></i> 最近请求记录';
     toggleBtn.addEventListener('click', togglePanel);
     menu.appendChild(toggleBtn);
+
+    // 延迟重新 append，确保在所有同步初始化的插件之后排在末尾
+    // appendChild 对已存在的节点会将其移动到容器末尾
+    setTimeout(() => {
+        if (toggleBtn && toggleBtn.parentNode) {
+            toggleBtn.parentNode.appendChild(toggleBtn);
+        }
+    }, 100);
 }
 
 function buildUI() {
@@ -904,11 +802,6 @@ function buildUI() {
     } catch (e) {
         masterEnabled = true;
     }
-    try {
-        fetchInterceptionEnabled = localStorage.getItem(STORAGE_FETCH_INTERCEPTION_KEY) === '1';
-    } catch (e) {
-        fetchInterceptionEnabled = false;
-    }
 
     panelEl = document.createElement('div');
     panelEl.id = 'rlog-panel';
@@ -920,12 +813,6 @@ function buildUI() {
         <div class="rlog-panel-header">
             <h4 title="点击折叠/展开窗口">最近请求记录 (${records.length}/${MAX_RECORDS})</h4>
             <div class="rlog-header-actions">
-                <div class="rlog-fetch-toggle-wrapper" title="尝试捕获通过浏览器 fetch 直接发送的 AI 请求（例如某些第三方插件绕过 ST 原生事件发出的请求）。&#10;&#10;由于各插件实现方式不同，部分请求可能无法被此钩子截获。&#10;&#10;注意：启用后将拦截全局 fetch 调用，仅分析与 AI 相关的请求体，不会影响其他网络请求或造成性能问题。&#10;默认关闭。">
-                    <button id="rlog-fetch-toggle" class="rlog-header-btn rlog-fetch-toggle-btn">
-                        <i class="fa-solid fa-toggle-off"></i>
-                    </button>
-                    <span class="rlog-fetch-label">广播监听</span>
-                </div>
                 <button id="rlog-master-toggle" class="rlog-header-btn rlog-master-on" title="总开关：已启用 — 点击关闭">
                     <i class="fa-solid fa-power-off"></i>
                 </button>
@@ -974,19 +861,6 @@ function buildUI() {
     });
     updateThemeButtonIcon();
 
-    const fetchToggleBtn = panelEl.querySelector('#rlog-fetch-toggle');
-    if (fetchToggleBtn) {
-        fetchToggleBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleFetchInterception(!fetchInterceptionEnabled);
-        });
-    }
-    updateFetchToggleUI();
-
-    if (fetchInterceptionEnabled) {
-        installFetchHook();
-    }
-
     // 绑定总开关
     const masterToggleBtn = panelEl.querySelector('#rlog-master-toggle');
     if (masterToggleBtn) {
@@ -1000,6 +874,11 @@ function buildUI() {
 
     makeDraggable(panelEl);
     makeResizable(panelEl);
+
+    // 安装 fetch 拦截（受总开关控制）
+    if (masterEnabled) {
+        installFetchHook();
+    }
 
     renderPanelContent();
 }
@@ -1192,9 +1071,6 @@ function init() {
 
     eventSource = ctx.eventSource;
     event_types = ctx.event_types;
-
-    eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
-    eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onTextCompletionPromptReady);
 
     eventSource.once(event_types.APP_READY, () => {
         buildUI();

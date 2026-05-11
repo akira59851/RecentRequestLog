@@ -1,9 +1,9 @@
 {
     "display_name": "最近请求记录",
-    "loading_order": 100,
+    "loading_order": 999,
     "js": "index.js",
     "css": "style.css",
     "author": "akira",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "description": "静默抓取每次发送给AI的完整提示词，按角色分开展示消息，临时保存最多10条记录。支持昼/夜模式切换。"
 }

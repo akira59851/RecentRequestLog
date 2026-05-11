@@ -63,36 +63,6 @@
 }
 .rlog-header-btn:hover { color: #111; background: rgba(0,0,0,0.04); border-color: #bbb; }
 
-/* fetch 拦截开关包装 */
-.rlog-fetch-toggle-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    cursor: default;
-    padding: 2px 4px;
-    border-radius: 4px;
-    transition: background 0.15s;
-}
-.rlog-fetch-toggle-wrapper:hover {
-    background: rgba(0,0,0,0.04);
-}
-
-.rlog-fetch-toggle-btn {
-    padding: 1px 3px !important;
-    font-size: 18px !important;
-}
-
-.rlog-fetch-toggle-btn.rlog-fetch-on {
-    color: #2b8c34 !important;
-}
-
-.rlog-fetch-label {
-    font-size: 11px;
-    color: #888;
-    white-space: nowrap;
-    user-select: none;
-}
-
 #rlog-close-btn {
     background: none;
     border: none;
@@ -428,8 +398,6 @@
         padding: 6px 8px;
         max-height: 150px;
     }
-    .rlog-fetch-label { font-size: 10px; }
-    .rlog-fetch-toggle-btn { font-size: 16px !important; }
     .rlog-resize-grip {
         font-size: 12px;
         padding: 2px 6px 3px 0;
@@ -572,17 +540,6 @@
     color: #4caf50;
 }
 #rlog-panel:not(.rlog-light) .rlog-master-off {
-    color: #999;
-}
-
-/* 暗色 fetch 拦截相关 */
-#rlog-panel:not(.rlog-light) .rlog-fetch-toggle-wrapper:hover {
-    background: rgba(255,255,255,0.06);
-}
-#rlog-panel:not(.rlog-light) .rlog-fetch-toggle-btn.rlog-fetch-on {
-    color: #5acc5a !important;
-}
-#rlog-panel:not(.rlog-light) .rlog-fetch-label {
     color: #999;
 }
 
