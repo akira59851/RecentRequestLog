@@ -675,6 +675,9 @@ function addRecord(characterName, messages, source, modelName) {
         collapsed: true,
     };
 
+    // 新记录到达时，折叠所有已有记录（仅折叠记录本身，保持各记录内部消息的折叠/展开状态不变）
+    records.forEach(r => { r.collapsed = true; });
+
     records.unshift(record);
     if (records.length > MAX_RECORDS) {
         records.pop();
@@ -682,6 +685,9 @@ function addRecord(characterName, messages, source, modelName) {
 
     if (panelEl && isPanelVisible) {
         renderPanelContent();
+        // 回到顶部最新一条
+        const listEl = panelEl.querySelector('#rlog-list');
+        if (listEl) listEl.scrollTop = 0;
     }
 }
 
@@ -1329,6 +1335,133 @@ function closeMaxRecordsDialog() {
 }
 
 
+// ── 通用确认弹窗 ─────────────────────────────
+
+/** @type {HTMLElement|null} 当前确认弹窗的 DOM 元素 */
+let confirmDialogEl = null;
+
+/**
+ * 创建并显示通用确认弹窗（用于清空所有记录、删除单条记录等破坏性操作）
+ * @param {object} options 配置项
+ * @param {string} [options.title='确认操作'] 弹窗标题
+ * @param {string} [options.message=''] 弹窗正文（支持 HTML）
+ * @param {string} [options.confirmText='确认'] 确认按钮文字
+ * @param {string} [options.cancelText='取消'] 取消按钮文字
+ * @param {Function} [options.onConfirm] 点击确认后的回调函数
+ * @param {Function} [options.onCancel] 点击取消/关闭后的回调函数
+ */
+function showConfirmDialog(options) {
+    const {
+        title = '确认操作',
+        message = '',
+        confirmText = '确认',
+        cancelText = '取消',
+        onConfirm = null,
+        onCancel = null,
+    } = options || {};
+
+    // 如果已有弹窗，先移除
+    closeConfirmDialog();
+
+    // 创建弹窗遮罩层
+    // 使用 inline style 设置定位尺寸，防止父页面 CSS (如 transform) 破坏 position:fixed 的参考系
+    const overlay = document.createElement('div');
+    overlay.className = 'rlog-dialog-overlay';
+    overlay.style.cssText = `
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        z-index: 9999 !important;
+    `;
+    overlay.addEventListener('click', (e) => {
+        // 点击遮罩层外部关闭
+        if (e.target === overlay) {
+            closeConfirmDialog();
+            if (typeof onCancel === 'function') onCancel();
+        }
+    });
+
+    // 创建弹窗主体
+    const dialog = document.createElement('div');
+    dialog.className = 'rlog-dialog rlog-confirm-dialog';
+
+    // 根据当前主题添加对应的类名
+    if (isLightTheme) {
+        dialog.classList.add('rlog-dialog-light');
+    }
+
+    dialog.innerHTML = `
+        <div class="rlog-dialog-header">
+            <span>${escapeHtml(title)}</span>
+            <button class="rlog-dialog-close" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="rlog-dialog-body">
+            <div class="rlog-confirm-message">${message}</div>
+            <div class="rlog-confirm-actions">
+                <button class="rlog-dialog-btn rlog-dialog-btn-cancel" id="rlog-confirm-cancel">${escapeHtml(cancelText)}</button>
+                <button class="rlog-dialog-btn rlog-dialog-btn-danger" id="rlog-confirm-ok">${escapeHtml(confirmText)}</button>
+            </div>
+        </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    confirmDialogEl = overlay;
+
+    // 绑定关闭按钮事件
+    dialog.querySelector('.rlog-dialog-close').addEventListener('click', () => {
+        closeConfirmDialog();
+        if (typeof onCancel === 'function') onCancel();
+    });
+
+    // 绑定取消按钮事件
+    dialog.querySelector('#rlog-confirm-cancel').addEventListener('click', () => {
+        closeConfirmDialog();
+        if (typeof onCancel === 'function') onCancel();
+    });
+
+    // 绑定确认按钮事件
+    dialog.querySelector('#rlog-confirm-ok').addEventListener('click', () => {
+        closeConfirmDialog();
+        if (typeof onConfirm === 'function') onConfirm();
+    });
+
+    // 键盘支持：Enter 确认、Escape 取消
+    dialog.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            dialog.querySelector('#rlog-confirm-ok').click();
+        } else if (e.key === 'Escape') {
+            closeConfirmDialog();
+            if (typeof onCancel === 'function') onCancel();
+        }
+    });
+
+    // 自动聚焦取消按钮（默认安全操作，避免误触确认）
+    setTimeout(() => {
+        const cancelBtn = dialog.querySelector('#rlog-confirm-cancel');
+        if (cancelBtn) cancelBtn.focus();
+    }, 100);
+}
+
+/**
+ * 关闭通用确认弹窗
+ */
+function closeConfirmDialog() {
+    if (confirmDialogEl) {
+        confirmDialogEl.remove();
+        confirmDialogEl = null;
+    }
+}
+
+
 // ── 渲染 ───────────────────────────────────────
 
 function getFullPromptText(record) {
@@ -1479,6 +1612,9 @@ function renderPanelContent() {
         .join('');
 
     bindListEvents(listEl);
+
+    // 为消息内容区创建 overlay 进度条
+    attachScrollIndicators(listEl);
 }
 
 /**
@@ -1513,9 +1649,14 @@ function bindListEvents(listEl) {
             if (e.target.closest('button')) return;
             const recordEl = this.closest('.rlog-record');
             const idx = Number(recordEl.dataset.recordIndex);
+            const wasCollapsed = records[idx] ? records[idx].collapsed : false;
             preserveScrollTop(() => {
                 toggleRecordCollapse(idx, recordEl);
             });
+            // 折叠后再展开时，返回顶部最新一条记录（内部消息的折叠/展开状态不重置）
+            if (wasCollapsed) {
+                listEl.scrollTop = 0;
+            }
         });
     });
 
@@ -1551,7 +1692,19 @@ function bindListEvents(listEl) {
         btn.addEventListener('click', function (e) {
             e.stopPropagation();
             const idx = Number(this.dataset.record);
-            deleteRecord(idx);
+            const record = records[idx];
+            if (!record) return;
+
+            // 确认后再删除，避免误触
+            showConfirmDialog({
+                title: '删除单条记录',
+                message: `确定要删除 <strong>${escapeHtml(record.characterName)}</strong> 的这条请求记录吗？<br>（${escapeHtml(record.timestamp)}，共 ${record.messages.length} 条消息）<br>此操作不可撤销。`,
+                confirmText: '删除',
+                cancelText: '取消',
+                onConfirm: () => {
+                    deleteRecord(idx);
+                },
+            });
         });
     });
 
@@ -1573,6 +1726,10 @@ function toggleRecordCollapse(index, recordEl) {
     } else {
         recordEl.classList.add('expanded');
         recordEl.classList.remove('collapsed');
+        // 展开记录后，为所有已展开消息的内容区创建进度条
+        recordEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
+            if (contentEl.offsetParent !== null) createScrollbarForContent(contentEl);
+        });
     }
 }
 
@@ -1584,6 +1741,12 @@ function toggleMessageCollapse(recIdx, msgIdx, msgItem) {
     } else {
         msgItem.classList.add('expanded');
         msgItem.classList.remove('collapsed');
+        // 展开消息后，内容区回到顶部
+        const contentEl = msgItem.querySelector('.rmsg-content');
+        if (contentEl) {
+            contentEl.scrollTop = 0; // 折叠后再展开时，从消息内容顶部开始看
+            createScrollbarForContent(contentEl);
+        }
     }
 }
 
@@ -1632,6 +1795,9 @@ function collapseAllEntries() {
             });
         }
     });
+    // 折叠全部后回到顶部最新一条
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (listEl) listEl.scrollTop = 0;
 }
 
 /**
@@ -1672,6 +1838,10 @@ function expandRecordMessages(index) {
         recordEl.querySelectorAll('.rmsg-item').forEach(el => {
             el.classList.add('expanded');
             el.classList.remove('collapsed');
+        });
+        // 为所有内容区创建进度条
+        recordEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
+            if (contentEl.offsetParent !== null) createScrollbarForContent(contentEl);
         });
     }
 }
@@ -1745,6 +1915,250 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+
+// ── Overlay 进度条（自定义滚动条） ──────────────────
+
+/**
+ * 存储每个 .rmsg-content 对应的进度条清理数据
+ * Map key: contentEl -> { resizeObserver, scrollHandler, hitboxEl }
+ */
+const scrollbarCleanups = new Map();
+
+/**
+ * 为单个 .rmsg-content 元素创建 overlay 进度条
+ * @param {HTMLElement} contentEl .rmsg-content 元素
+ */
+function createScrollbarForContent(contentEl) {
+    // 先清理已有进度条（避免重复创建）
+    detachScrollbarForContent(contentEl);
+
+    // 内容不需要滚动时不需要进度条
+    if (contentEl.scrollHeight <= contentEl.clientHeight) return;
+
+    // 挂载目标：.rmsg-item（contentEl 的父容器），而不是 contentEl 内部
+    // 这样 hitbox 使用 position: absolute 定位时不会随 contentEl 滚动而移出视口
+    const container = contentEl.parentElement;
+    if (!container || !container.classList.contains('rmsg-item')) return;
+
+    // 确保容器有 position: relative 作为定位参考
+    const currentPosition = getComputedStyle(container).position;
+    if (currentPosition === 'static') {
+        container.style.position = 'relative';
+    }
+
+    // --- 创建 DOM 结构 ---
+    const hitbox = document.createElement('div');
+    hitbox.className = 'rlog-scroll-hitbox';
+
+    const track = document.createElement('div');
+    track.className = 'rlog-scroll-track';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'rlog-scroll-thumb';
+
+    const dot = document.createElement('div');
+    dot.className = 'rlog-scroll-dot';
+
+    // dot 作为 hitbox 的直接子元素（与 track 平级），避免被 track 的 overflow:hidden 裁剪
+    track.appendChild(thumb);
+    hitbox.appendChild(track);
+    hitbox.appendChild(dot);
+    container.appendChild(hitbox);
+
+    /**
+     * 根据当前滚动位置和内容高度更新滑块
+     */
+    function updateThumb() {
+        const scrollHeight = contentEl.scrollHeight;
+        const clientHeight = contentEl.clientHeight;
+        const scrollTop = contentEl.scrollTop;
+        const maxScroll = scrollHeight - clientHeight;
+
+        if (maxScroll <= 0) {
+            hitbox.style.display = 'none';
+            return;
+        }
+        hitbox.style.display = '';
+
+        // hitbox 对齐 contentEl 的位置（因为挂载在 .rmsg-item 上而非 contentEl 内部）
+        const contentTop = contentEl.offsetTop;
+        hitbox.style.top = contentTop + 'px';
+        hitbox.style.height = clientHeight + 'px';
+
+        // 轨道可用高度（track 的 top:4px, bottom:4px）
+        const trackHeight = clientHeight - 8;
+
+        // 滑块高度 = 可见比例 × 轨道高度，最小 20px
+        const thumbRatio = clientHeight / scrollHeight;
+        const thumbHeight = Math.max(20, thumbRatio * trackHeight);
+        thumb.style.height = thumbHeight + 'px';
+
+        // 滑块可移动范围
+        const thumbRange = trackHeight - thumbHeight;
+
+        // 滑块位置 = 当前滚动比例 × 可移动范围
+        const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * thumbRange : 0;
+        thumb.style.top = thumbTop.toFixed(1) + 'px';
+
+    }
+
+    // 初始更新
+    updateThumb();
+
+    // 监听滚动事件
+    const onScroll = () => updateThumb();
+    contentEl.addEventListener('scroll', onScroll, { passive: true });
+
+    // ResizeObserver 监听内容高度变化（展开/折叠文本等）
+    const resizeObserver = new ResizeObserver(() => {
+        updateThumb();
+    });
+    resizeObserver.observe(contentEl);
+
+    // --- 交互：pointer 事件 ---
+    // 圆点跟随手指位置（不跟随 thumb），可到达轨道两端
+    /** @type {boolean} 是否正在拖拽 */
+    let dragging = false;
+    /** @type {number|null} 当前 pointerId（用于 pointer capture） */
+    let capturedPointerId = null;
+
+    /**
+     * 根据 clientY 计算圆点在 hitbox 内的 top 值（限制在轨道范围内）
+     * @param {number} clientY 指针的页面 Y 坐标
+     * @returns {number} dot 的 style.top 值（相对于 hitbox）
+     */
+    function clientYToDotTop(clientY) {
+        const hitboxRect = hitbox.getBoundingClientRect();
+        // 手指相对 hitbox 顶部的 Y 偏移（dot 是 hitbox 子元素，style.top 相对于 hitbox）
+        let relativeY = clientY - hitboxRect.top;
+
+        // 【可调参数】TRACK_PADDING — 轨道距 hitbox 边缘的间距
+        // 必须与 CSS 中 .rlog-scroll-track 的 top/bottom 值保持一致
+        const TRACK_PADDING = 4;          // CSS: .rlog-scroll-track { top: 4px; bottom: 4px; }
+        const trackTop = TRACK_PADDING;
+        const trackBottom = hitboxRect.height - TRACK_PADDING;
+        relativeY = Math.max(trackTop, Math.min(trackBottom, relativeY));
+
+        // 【可调参数】DOT_HALF — 圆点高度的一半
+        // 必须与 CSS 中 .rlog-scroll-dot 的 height 值保持一致 (height/2)
+        const DOT_HALF = 2.5;               // CSS: .rlog-scroll-dot { height: 6px; } → 6/2=3
+        return (relativeY - DOT_HALF) + 'px';
+    }
+
+    /**
+     * 根据圆点位置反推内容滚动位置
+     * @param {number} clientY 指针的页面 Y 坐标
+     * @returns {number} 对应的 scrollTop 值
+     */
+    function dotPositionToScroll(clientY) {
+        const hitboxRect = hitbox.getBoundingClientRect();
+        const clientHeight = contentEl.clientHeight;
+        const maxScroll = contentEl.scrollHeight - clientHeight;
+        if (maxScroll <= 0) return 0;
+
+        let relativeY = clientY - hitboxRect.top;
+        const trackHeight = clientHeight - 8;
+        const trackTop = 4;
+        const trackBottom = trackTop + trackHeight;
+        relativeY = Math.max(trackTop, Math.min(trackBottom, relativeY));
+
+        // 圆点在轨道中的比例（0~1）
+        const ratio = (relativeY - trackTop) / trackHeight;
+        return Math.round(ratio * maxScroll);
+    }
+
+    function onPointerDown(e) {
+        // 只处理主按钮（鼠标左键或触摸）
+        if (e.button !== undefined && e.button !== 0) return;
+
+        dragging = true;
+        capturedPointerId = e.pointerId;
+        hitbox.setPointerCapture(e.pointerId);
+        hitbox.classList.add('active');
+
+        // 立即将圆点定位到按下位置，并滚动到对应位置
+        dot.style.top = clientYToDotTop(e.clientY);
+        contentEl.scrollTop = dotPositionToScroll(e.clientY);
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+
+        const maxScroll = contentEl.scrollHeight - contentEl.clientHeight;
+        if (maxScroll <= 0) return;
+
+        // 圆点跟随手指
+        dot.style.top = clientYToDotTop(e.clientY);
+        // 内容滚动跟随圆点
+        contentEl.scrollTop = dotPositionToScroll(e.clientY);
+
+        e.preventDefault();
+    }
+
+    function onPointerUp(e) {
+        if (!dragging) return;
+        dragging = false;
+        hitbox.classList.remove('active');
+        if (capturedPointerId !== null) {
+            try { hitbox.releasePointerCapture(capturedPointerId); } catch (err) { /* ignore */ }
+            capturedPointerId = null;
+        }
+    }
+
+    hitbox.addEventListener('pointerdown', onPointerDown);
+    hitbox.addEventListener('pointermove', onPointerMove);
+    hitbox.addEventListener('pointerup', onPointerUp);
+    hitbox.addEventListener('pointercancel', onPointerUp);
+    // lostpointercapture 作为兜底清理
+    hitbox.addEventListener('lostpointercapture', onPointerUp);
+
+    // 存储清理数据
+    scrollbarCleanups.set(contentEl, {
+        resizeObserver,
+        scrollHandler: onScroll,
+        hitboxEl: hitbox,
+    });
+}
+
+/**
+ * 移除单个 .rmsg-content 的 overlay 进度条并清理资源
+ * @param {HTMLElement} contentEl .rmsg-content 元素
+ */
+function detachScrollbarForContent(contentEl) {
+    const cleanup = scrollbarCleanups.get(contentEl);
+    if (!cleanup) return;
+
+    // 移除 scroll 事件监听
+    contentEl.removeEventListener('scroll', cleanup.scrollHandler);
+    // 断开 ResizeObserver
+    cleanup.resizeObserver.disconnect();
+    // 从 DOM 中移除 hitbox
+    if (cleanup.hitboxEl && cleanup.hitboxEl.parentNode) {
+        cleanup.hitboxEl.remove();
+    }
+    scrollbarCleanups.delete(contentEl);
+}
+
+/**
+ * 为列表中的所有 .rmsg-content 创建 overlay 进度条
+ * 用于 renderPanelContent 后挂载，也用于展开/折叠后刷新
+ * @param {HTMLElement} listEl 列表容器元素
+ */
+function attachScrollIndicators(listEl) {
+    // 清理所有已有进度条（因为 renderPanelContent 使用 innerHTML 重建了 DOM）
+    scrollbarCleanups.forEach((_, contentEl) => {
+        detachScrollbarForContent(contentEl);
+    });
+
+    // 为所有可见的 .rmsg-content 创建进度条
+    listEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
+        if (contentEl.offsetParent !== null) {
+            createScrollbarForContent(contentEl);
+        }
+    });
 }
 
 
@@ -1914,7 +2328,19 @@ function buildUI() {
 
     panelEl.querySelector('#rlog-clear-btn').addEventListener('click', (e) => {
         e.stopPropagation();
-        clearAllRecords();
+        if (records.length === 0) {
+            // 没有记录时无需确认，直接提示无内容可清空
+            return;
+        }
+        showConfirmDialog({
+            title: '清空所有记录',
+            message: `确定要清空全部 <strong>${records.length}</strong> 条请求记录吗？<br>此操作不可撤销。`,
+            confirmText: '清空',
+            cancelText: '取消',
+            onConfirm: () => {
+                clearAllRecords();
+            },
+        });
     });
 
     panelEl.querySelector('#rlog-help-btn').addEventListener('click', (e) => {

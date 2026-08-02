@@ -451,6 +451,7 @@
 }
 
 .rmsg-item {
+    position: relative;     /* 为 overlay 进度条（挂载到此元素）提供定位参考 */
     background: transparent;
     border: none;
     border-bottom: 1px solid #e5e7eb;
@@ -575,7 +576,7 @@
 /* 消息内容 */
 .rmsg-content {
     margin: 0;
-    padding: 4px 10px 16px 24px; /* 增加左侧内边距与标题区分，增加底部内边距补偿外壳间距 */
+    padding: 4px 18px 16px 24px; /* 右侧 18px：为右侧 overlay 滚动条留出间距，避免文字与滚动条拥挤 */
     font-size: 12px;
     line-height: 1.6;
     color: #374151;
@@ -585,7 +586,10 @@
     font-family: 'Segoe UI', system-ui, -apple-system, Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
     max-height: 450px;
     overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none; /* Firefox: 隐藏原生滚动条 */
     background: transparent;
+    position: relative; /* 为 overlay 进度条提供定位参考 */
 }
 
 /* ── 复制反馈 ────────────────────────────────────── */
@@ -594,23 +598,24 @@
 
 /* ── 滚动条 (明亮) ──────────────────────────────── */
 /* 外层容器 .rlog-list 的滚动条已隐藏（见 .rlog-list 设置） */
+/* .rmsg-content 的原生滚动条已隐藏，改用 overlay 进度条（见下方 .rlog-scroll-* 样式） */
 .rmsg-content::-webkit-scrollbar,
 .rlog-record-body::-webkit-scrollbar { 
-    width: 4px; 
-    height: 4px;
+    display: none;
+    width: 0;
+    height: 0;
 }
 .rmsg-content::-webkit-scrollbar-track,
 .rlog-record-body::-webkit-scrollbar-track { 
-    background: transparent; 
+    display: none;
 }
 .rmsg-content::-webkit-scrollbar-thumb,
 .rlog-record-body::-webkit-scrollbar-thumb { 
-    background: #cbd5e1; 
-    border-radius: 2px; 
+    display: none;
 }
 .rmsg-content::-webkit-scrollbar-thumb:hover,
 .rlog-record-body::-webkit-scrollbar-thumb:hover { 
-    background: #94a3b8; 
+    display: none;
 }
 
 /* ── 内容预览文字（在角色标签和token数之间显示） ── */
@@ -796,7 +801,7 @@
     }
     .rmsg-content {
         font-size: 11px;
-        padding: 4px 8px 14px 20px;
+        padding: 4px 16px 14px 20px; /* 右侧 16px：为右侧 overlay 滚动条留出间距，避免文字与滚动条拥挤 */
         max-height: 350px;
     }
     .rlog-resize-grip {
@@ -1073,15 +1078,7 @@
     color: #a1a1aa;
 }
 
-/* 暗色滚动条 */
-#rlog-panel:not(.rlog-light) .rmsg-content::-webkit-scrollbar-thumb,
-#rlog-panel:not(.rlog-light) .rlog-record-body::-webkit-scrollbar-thumb {
-    background: #3f3f46;
-}
-#rlog-panel:not(.rlog-light) .rmsg-content::-webkit-scrollbar-thumb:hover,
-#rlog-panel:not(.rlog-light) .rlog-record-body::-webkit-scrollbar-thumb:hover {
-    background: #52525b;
-}
+/* 暗色滚动条 — 原生滚动条已隐藏，无需样式（overlay 进度条暗色主题见下方） */
 
 /* ============================================================
    最大记录数设置弹窗 (明亮主题默认)
@@ -1223,6 +1220,82 @@
     font-size: 11px;
     color: #6b7280;
     line-height: 1.4;
+}
+
+/* ============================================================
+   通用确认弹窗 (清空所有记录 / 删除单条记录)
+   ============================================================ */
+
+/* 弹窗正文 */
+.rlog-confirm-message {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #374151;
+    margin-bottom: 16px;
+    word-break: break-word;
+}
+
+.rlog-confirm-message strong {
+    color: #111827;
+    font-weight: 600;
+}
+
+/* 按钮行 */
+.rlog-confirm-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* 取消按钮 */
+.rlog-dialog-btn-cancel {
+    background: #f3f4f6;
+    color: #374151;
+    border-color: #d1d5db;
+}
+.rlog-dialog-btn-cancel:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+}
+
+/* 危险确认按钮（删除/清空） */
+.rlog-dialog-btn-danger {
+    background: #dc2626;
+    color: #ffffff;
+    border-color: #b91c1c;
+}
+.rlog-dialog-btn-danger:hover {
+    background: #b91c1c;
+    border-color: #991b1b;
+}
+
+/* 确认弹窗暗色主题 */
+.rlog-dialog:not(.rlog-dialog-light) .rlog-confirm-message {
+    color: #a1a1aa;
+}
+.rlog-dialog:not(.rlog-dialog-light) .rlog-confirm-message strong {
+    color: #f4f4f5;
+}
+
+.rlog-dialog:not(.rlog-dialog-light) .rlog-dialog-btn-cancel {
+    background: #3f3f46;
+    color: #e4e4e7;
+    border-color: #52525b;
+}
+.rlog-dialog:not(.rlog-dialog-light) .rlog-dialog-btn-cancel:hover {
+    background: #52525b;
+    border-color: #71717a;
+}
+
+.rlog-dialog:not(.rlog-dialog-light) .rlog-dialog-btn-danger {
+    background: #dc2626;
+    color: #ffffff;
+    border-color: #b91c1c;
+}
+.rlog-dialog:not(.rlog-dialog-light) .rlog-dialog-btn-danger:hover {
+    background: #b91c1c;
+    border-color: #991b1b;
 }
 
 /* ============================================================
@@ -1538,5 +1611,104 @@
         max-height: 88vh !important;  /* 限制弹窗最大高度 */
         overflow-y: auto !important;  /* 内容超出时弹窗内部可滚动 */
         margin: auto !important;
+    }
+}
+
+/* ============================================================
+   Overlay 进度条 (自定义滚动条，视觉与交互分离)
+   适用于 .rmsg-content 消息内容区（仅含长文本的消息才需要）
+   ============================================================ */
+
+/* ── 触控区：透明悬于内容上方，不挤占空间 ─────────── */
+.rlog-scroll-hitbox {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 30px;          /* 【可调】触控区宽度，保证手指易于点中 */
+    z-index: 11;          /* 高于 .rmsg-header(z-index:10)，防止拖到顶部时圆点被标题栏遮挡 */
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;   /* 防止浏览器默认滚动/缩放干扰 */
+}
+
+/* ── 轨道：极细线，视觉层 ─────────────────────────── */
+.rlog-scroll-track {
+    position: absolute;
+    top: 4px;             /* 【可调】轨道距 hitbox 顶部间距。JS 中 clientYToDotTop 的 trackTop 需同步 */
+    right: 4.2px;           /* 【可调】轨道距 hitbox/contentEl 右边缘间距。影响轨道中心位置。视觉居中校准：圆点直径5px，轨道线宽度2px。右边缘间距4.2px为人工校准，4.5px/5px均偏离中心。*/
+    bottom: 4px;          /* 【可调】轨道距 hitbox 底部间距。JS 中 trackBottom = hitboxH - 4 需同步 */
+    width: 2px;           /* 【可调】轨道线宽度。收窄可更低调，加宽更易见 */
+    border-radius: 1px;
+    background: #e5e7eb;  /* 明亮主题：浅灰轨道 */
+    pointer-events: none; /* 事件穿透，由 hitbox 统一处理 */
+    overflow: hidden;
+}
+
+/* ── 滑块：细线，高度由 JS 动态设定 ──────────────── */
+.rlog-scroll-thumb {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;             /* 填满 track 宽度（2px），与轨道等宽 */
+    height: 40px;         /* JS 会动态覆盖此值 */
+    min-height: 20px;     /* 【可调】滑块最小高度，防止过矮看不见 */
+    border-radius: 1px;
+    background: #94a3b8;  /* 明亮主题：灰色滑块 */
+    pointer-events: none;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* ── 圆点：默认缩到不可见，按住时弹出，中心对齐轨道中心线 ── */
+.rlog-scroll-dot {
+    position: absolute;
+    right: 3px;
+    width: 5px;           /* 【可调】圆点直径，改变时同步改 right 和 JS 的 DOT_HALF */
+    height: 5px;          /* 【可调】同上，与 width 保持一致为正圆 */
+    border-radius: 50%;
+    background: #475569;   /* 明亮主题：深色圆点 */
+    transform: scale(0);   /* 默认隐藏（缩放为0） */
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+}
+
+/* ── 交互状态：按住/拖拽时 ───────────────────────── */
+/* 触控区激活时，滑块淡出，圆点弹出 */
+.rlog-scroll-hitbox.active .rlog-scroll-thumb {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+.rlog-scroll-hitbox.active .rlog-scroll-dot {
+    transform: scale(1);
+}
+
+/* 触控区悬停（桌面端，未按住时的视觉提示） */
+.rlog-scroll-hitbox:hover .rlog-scroll-thumb {
+    background: #475569;
+}
+
+/* ============================================================
+   Overlay 进度条 — 暗色主题
+   ============================================================ */
+#rlog-panel:not(.rlog-light) .rlog-scroll-track {
+    background: #27272a;
+}
+#rlog-panel:not(.rlog-light) .rlog-scroll-thumb {
+    background: #52525b;
+}
+#rlog-panel:not(.rlog-light) .rlog-scroll-hitbox:hover .rlog-scroll-thumb {
+    background: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-scroll-dot {
+    background: #a1a1aa;
+}
+
+/* ============================================================
+   Overlay 进度条 — 移动端响应式
+   ============================================================ */
+@media (max-width: 768px) {
+    .rlog-scroll-hitbox {
+        width: 30px;       /* 移动端保持 30px 宽度 */
     }
 }
