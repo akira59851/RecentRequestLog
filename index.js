@@ -2,7 +2,7 @@
  * SillyTavern 第三方插件: 最近请求记录 (Recent Request Log)
  *
  * 安装方式：将 RecentRequestLog 整个文件夹复制到
- * SillyTavern-release/public/scripts/extensions/third-party/ 目录下，
+ * SillyTavern/public/scripts/extensions/third-party/ 目录下
  * 然后启动或刷新 SillyTavern 即可。
  *
  * 功能:
@@ -104,6 +104,11 @@ let toggleBtn = null;
 /** @type {boolean} 面板是否可见 */
 let isPanelVisible = false;
 
+/** @type {boolean} 面板内容是否需要重建（数据变化时置 true，渲染完成后清 false）
+ * 面板隐藏时 DOM 完整保留；只有数据/渲染设置变化时才在下次打开时重建 DOM，
+ * 避免展开大量消息时每次打开面板都全量重建造成卡顿。 */
+let panelContentDirty = true;
+
 /** @type {boolean} 是否为明亮模式 */
 let isLightTheme = false;
 
@@ -153,6 +158,22 @@ let contentPreviewEnabled = false;
 
 /** @type {boolean|null} 强制覆盖内容预览开关（用于引导程序演示） */
 let forcePreviewState = null;
+
+/** @type {object|null} 当前搜索状态（同一时间仅一条记录可搜索）
+ * 结构: { recordIndex, keyword, matches, currentIdx, searchEl }
+ * - recordIndex: 正在搜索的记录索引
+ * - keyword: 当前搜索关键词（用于判断是否需重新搜索）
+ * - matches: Array<{ msgIdx, start, end }> 所有匹配位置
+ * - currentIdx: 当前高亮的是第几个匹配（-1 表示无匹配）
+ * - searchEl: 搜索框容器 DOM 元素
+ */
+let searchState = null;
+
+/** @type {number|null} 搜索输入 debounce 定时器 ID */
+let searchDebounceTimer = null;
+
+/** @type {number} 搜索输入防抖延迟(ms)，输入停止后过久再执行搜索 */
+const SEARCH_DEBOUNCE_MS = 120;
 
 /**
  * 从模型名称中提取「家族」标识
@@ -575,6 +596,10 @@ function getSourceClass(source) {
 // ── 暴露给其他模块的 API (如引导 tour.js) ────────
 window.__RLogApi = {
     records: () => records,
+    // 搜索相关（供 tour.js 使用）
+    openSearchForRecord: (recordIndex) => openSearchForRecord(recordIndex),
+    performSearch: (recordIndex, keyword) => performSearch(recordIndex, keyword),
+    closeSearch: () => closeSearch(),
     injectDemo: () => {
         const demoRecord = {
             characterName: '未知角色',
@@ -594,10 +619,12 @@ window.__RLogApi = {
             isDemo: true // 标记为演示记录
         };
         records.unshift(demoRecord);
+        panelContentDirty = true;
         if (panelEl && isPanelVisible) renderPanelContent();
     },
     removeDemo: () => {
         records = records.filter(r => !r.isDemo);
+        panelContentDirty = true;
         if (panelEl && isPanelVisible) renderPanelContent();
     },
     openDrawer: () => {
@@ -614,10 +641,17 @@ window.__RLogApi = {
         if (moreDrawer) moreDrawer.classList.remove('expanded');
         if (moreBtn) moreBtn.classList.remove('active-drawer-btn');
     },
+    // 替换整个记录列表（供 tour.js 在引导期间清空/恢复记录使用）
+    setRecords: (newRecords) => {
+        records = Array.isArray(newRecords) ? newRecords : [];
+        panelContentDirty = true;
+        if (panelEl && isPanelVisible) renderPanelContent();
+    },
     expandDemo: () => {
         if (records.length > 0) {
             records[0].collapsed = false;
             records[0].messages.forEach(m => m.collapsed = false);
+            panelContentDirty = true;
             if (panelEl && isPanelVisible) renderPanelContent();
         }
     },
@@ -625,11 +659,13 @@ window.__RLogApi = {
         if (records.length > 0) {
             records[0].collapsed = true;
             records[0].messages.forEach(m => m.collapsed = true);
+            panelContentDirty = true;
             if (panelEl && isPanelVisible) renderPanelContent();
         }
     },
     forcePreview: (state) => {
         forcePreviewState = state ? true : null;
+        panelContentDirty = true;
         if (panelEl && isPanelVisible) renderPanelContent();
     }
 };
@@ -683,6 +719,7 @@ function addRecord(characterName, messages, source, modelName) {
         records.pop();
     }
 
+    panelContentDirty = true;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
         // 回到顶部最新一条
@@ -693,6 +730,7 @@ function addRecord(characterName, messages, source, modelName) {
 
 function clearAllRecords() {
     records = [];
+    panelContentDirty = true;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
     }
@@ -1041,6 +1079,7 @@ function setMasterEnabled(enabled) {
     if (panelEl && isPanelVisible) {
         // 如果当前列表为空且面板可见，立即刷新空白提示文案
         if (records.length === 0) {
+            panelContentDirty = true;
             renderPanelContent();
         }
     }
@@ -1105,6 +1144,8 @@ function toggleContentPreview() {
     contentPreviewEnabled = !contentPreviewEnabled;
     saveContentPreview(contentPreviewEnabled);
     updatePreviewToggleUI();
+    // 预览开关影响每条消息的渲染内容，需要重建 DOM
+    panelContentDirty = true;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
     }
@@ -1198,6 +1239,9 @@ function setMaxRecords(newMax) {
 
     // 刷新标题栏显示
     updateHeaderTitle();
+
+    // 记录数变化，需要重建 DOM
+    panelContentDirty = true;
 
     // 如果面板可见，刷新内容（裁剪后的列表）
     if (panelEl && isPanelVisible) {
@@ -1464,6 +1508,668 @@ function closeConfirmDialog() {
 
 // ── 渲染 ───────────────────────────────────────
 
+/**
+ * 重置当前搜索状态（搜索框关闭、关键词清空、高亮清除、命中序号重置）
+ * 用于折叠/删除/清空/新增记录等所有需要退出搜索模式的场景。
+ * 安全设计：不依赖搜索框 UI 是否已构建，DOM 中存在才操作。
+ */
+function resetSearchIfActive() {
+    // 清除 debounce 定时器
+    if (searchDebounceTimer !== null) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+    }
+
+    // 清除所有高亮标记（包括当前命中和其它残留 mark）
+    if (searchState) {
+        const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+        if (listEl) {
+            listEl.querySelectorAll('mark.rlog-search-mark, mark.rlog-search-mark-current').forEach(mark => {
+                const parent = mark.parentNode;
+                if (parent) {
+                    // 将 mark 替换为其文本内容，恢复原始文本
+                    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+                    // 合并相邻文本节点，避免产生多余节点
+                    parent.normalize();
+                }
+            });
+        }
+
+        // 如果搜索框 DOM 存在，恢复其初始状态
+        const searchEl = searchState.searchEl;
+        if (searchEl && searchEl.parentNode) {
+            searchEl.parentNode.removeChild(searchEl);
+        }
+        // 恢复对应记录的原操作按钮显示、折叠/展开箭头、搜索中状态标记
+        if (panelEl && searchState.recordIndex !== undefined) {
+            const recordEl = panelEl.querySelector(`.rlog-record[data-record-index="${searchState.recordIndex}"]`);
+            if (recordEl) {
+                // 移除「搜索中」标记（CSS 依赖它恢复被隐藏的按钮显示）
+                recordEl.classList.remove('rlog-searching');
+                // 恢复记录折叠/展开箭头（▾）
+                const toggleIcon = recordEl.querySelector('.rlog-toggle-icon');
+                if (toggleIcon) toggleIcon.style.visibility = '';
+            }
+        }
+
+        searchState = null;
+    }
+}
+
+/** @type {Set<string>} \s 等价的空白字符集合（避免循环内逐字符正则开销） */
+const WHITESPACE_CHARS = new Set([' ', '\t', '\n', '\r', '\f', '\v', '\u00a0', '\u1680',
+    '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007',
+    '\u2008', '\u2009', '\u200a', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000', '\ufeff']);
+
+/**
+ * 将文本归一化用于搜索匹配：所有空白字符（空格、换行、回车、Tab、全角空格等）的连续序列折叠为单个空格。
+ * 同时返回归一化后每个字符在原始文本中的索引映射，用于将匹配偏移恢复为原始内容偏移。
+ *
+ * 为什么需要：用户从外部复制多段文本搜索时，换行符在复制粘贴过程中常被转换为空格。
+ * 若消息内容中段落间是换行（\n 或 \r\n），直接按原文本匹配会失败。
+ * 归一化让「内容中的换行/空白」与「关键词中的空格」等价，实现跨换行匹配。
+ *
+ * @param {string} text 原始文本
+ * @returns {{normalized: string, map: number[]}}
+ *   normalized: 空白折叠后的文本（长度 ≤ 原始长度）
+ *   map: 长度为 normalized.length，map[i] = normalized 第 i 个字符在原始文本中的索引
+ */
+function normalizeTextWithMap(text) {
+    let normalized = '';
+    const map = [];
+    let lastWasSpace = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (WHITESPACE_CHARS.has(ch)) {
+            if (!lastWasSpace) {
+                normalized += ' ';
+                map.push(i);
+                lastWasSpace = true;
+            }
+            // 连续空白只保留一个空格（折叠）
+        } else {
+            normalized += ch;
+            map.push(i);
+            lastWasSpace = false;
+        }
+    }
+    return { normalized, map };
+}
+
+/**
+ * 在指定记录的所有消息内容中查找匹配位置
+ * 仅做字符串索引扫描，不触碰 DOM，保证极端长文本下性能稳定。
+ * 匹配前对内容和关键词做统一归一化（空白折叠），因此：
+ *   - 从外部复制多段文本搜索（换行被复制系统转为空格）也能正常匹配
+ *   - 消息内容中的 \n / \r\n / 空行与关键词中的空格等价
+ *   - 匹配结果 start/end 为原始内容偏移（经映射恢复），可直接用于 DOM 高亮
+ * @param {number} recordIndex 记录索引
+ * @param {string} keyword 搜索关键词
+ * @returns {Array<{msgIdx: number, start: number, end: number}>} 匹配位置列表
+ */
+function findMatchesInRecord(recordIndex, keyword) {
+    const record = records[recordIndex];
+    if (!record || !record.messages || !keyword) return [];
+
+    // 归一化搜索关键词：所有空白折叠为单个空格，并去除首尾空白
+    const normalizedKeyword = keyword.replace(/\s+/g, ' ').trim();
+    if (!normalizedKeyword) return [];
+    // 大小写不敏感搜索
+    const lowerKeyword = normalizedKeyword.toLowerCase();
+
+    const matches = [];
+
+    record.messages.forEach((msg, msgIdx) => {
+        if (typeof msg.content !== 'string') return;
+        const content = msg.content;
+        // 归一化消息内容（空白折叠 + 偏移映射）
+        const { normalized, map } = normalizeTextWithMap(content);
+        const lowerContent = normalized.toLowerCase();
+
+        let pos = 0;
+        // 快速通道：归一化内容中没有关键词则跳过该消息
+        const firstIdx = lowerContent.indexOf(lowerKeyword);
+        if (firstIdx === -1) return;
+
+        // 遍历所有出现位置（最多保护 5000 处，防止极端重复文本拖慢）
+        let count = 0;
+        while (pos <= normalized.length && count < 5000) {
+            const idx = lowerContent.indexOf(lowerKeyword, pos);
+            if (idx === -1) break;
+            // 将归一化内容中的匹配偏移映射回原始内容偏移
+            const origStart = map[idx];
+            const normEnd = idx + normalizedKeyword.length;
+            const origEnd = map[normEnd - 1] + 1;
+            matches.push({ msgIdx, start: origStart, end: origEnd });
+            pos = idx + normalizedKeyword.length;
+            count++;
+        }
+    });
+
+    return matches;
+}
+
+/**
+ * 清除所有搜索高亮 <mark>（普通黄色匹配 + 当前橙色命中），恢复原始文本节点
+ */
+function clearSearchHighlights() {
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!listEl) return;
+    listEl.querySelectorAll('mark.rlog-search-mark, mark.rlog-search-mark-current').forEach(mark => {
+        const parent = mark.parentNode;
+        if (parent) {
+            parent.replaceChild(document.createTextNode(mark.textContent), mark);
+            parent.normalize();
+        }
+    });
+}
+
+/**
+ * 将当前命中的橙色高亮降级为普通黄色高亮（保留在 DOM 中）
+ * 供导航跳转时复用已绘制的黄色高亮，避免全量重绘卡顿。
+ * 与 clearSearchHighlights 不同：它不删除 mark，只切换 CSS 类名，
+ * 因此旧命中重新变回黄色，折叠消息中的旧命中在重新展开后也保留黄色高亮。
+ * 降级时记录旧命中的 matchIdx，保证后续跳回该位置时能被 removeYellowMarkByMatchIdx 找到。
+ * @param {number} [oldMatchIdx] 旧命中的 matchIdx（可选，用于记录标记）
+ */
+function clearCurrentHighlight(oldMatchIdx) {
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!listEl) return;
+    listEl.querySelectorAll('mark.rlog-search-mark-current').forEach(mark => {
+        mark.classList.remove('rlog-search-mark-current');
+        mark.classList.add('rlog-search-mark');
+        if (oldMatchIdx !== undefined && oldMatchIdx >= 0) {
+            mark.dataset.matchIdx = String(oldMatchIdx);
+        }
+    });
+}
+
+/**
+ * 删除指定 matchIdx 的黄色普通匹配 mark（目标位置将由橙色覆盖绘制）
+ * @param {number} matchIdx 匹配在 matches 中的下标
+ */
+function removeYellowMarkByMatchIdx(matchIdx) {
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!listEl) return;
+    listEl.querySelectorAll(`mark.rlog-search-mark[data-match-idx="${matchIdx}"]`).forEach(mark => {
+        const parent = mark.parentNode;
+        if (parent) {
+            parent.replaceChild(document.createTextNode(mark.textContent), mark);
+            parent.normalize();
+        }
+    });
+}
+
+/**
+ * 在指定消息的内容区域中，将字符偏移 [start, end) 对应的文本包裹为 <mark>
+ * 使用 TreeWalker 遍历 text node 精确定位偏移。
+ * @param {HTMLElement} contentEl .rmsg-content 元素
+ * @param {number} start 起始偏移（相对该消息的纯文本）
+ * @param {number} end 结束偏移
+ * @param {string} [className='rlog-search-mark-current'] <mark> 的 CSS 类名（普通匹配用黄色，当前命中用橙色）
+ * @returns {HTMLElement|null} 创建的 <mark> 元素，失败返回 null
+ */
+function highlightRange(contentEl, start, end, className = 'rlog-search-mark-current') {
+    if (!contentEl || start < 0 || end <= start) return null;
+
+    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+    let currentOffset = 0;
+    let node = null;
+
+    // 找到包含 start 偏移的文本节点
+    while ((node = walker.nextNode())) {
+        const nodeLen = node.textContent.length;
+        if (currentOffset + nodeLen > start) break;
+        currentOffset += nodeLen;
+    }
+    if (!node) return null;
+
+    // 在该节点内拆分：before / mark / after
+    const nodeStart = currentOffset;
+    const splitStart = start - nodeStart;
+    const splitEnd = end - nodeStart;
+
+    if (splitEnd > node.textContent.length) {
+        // 跨节点边界的情况（关键词跨多个 text node），简化处理：只取当前节点内可匹配部分
+        const visibleStart = Math.max(0, splitStart);
+        const visibleEnd = Math.min(node.textContent.length, splitEnd);
+        if (visibleEnd <= visibleStart) return null;
+        const range = document.createRange();
+        range.setStart(node, visibleStart);
+        range.setEnd(node, visibleEnd);
+        const mark = document.createElement('mark');
+        mark.className = className;
+        try {
+            range.surroundContents(mark);
+        } catch (e) {
+            return null;
+        }
+        return mark;
+    }
+
+    const range = document.createRange();
+    range.setStart(node, splitStart);
+    range.setEnd(node, splitEnd);
+    const mark = document.createElement('mark');
+    mark.className = className;
+    try {
+        range.surroundContents(mark);
+    } catch (e) {
+        return null;
+    }
+    return mark;
+}
+
+/**
+ * 高亮本条记录内所有匹配位置（黄色），但不包括当前命中（当前命中由 applyCurrentMatch 单独绘制橙色）
+ * 同一消息内按 start 降序处理，避免先插入的 mark 影响后续文本偏移计算。
+ * @param {HTMLElement} recordEl 当前记录的 DOM 元素
+ * @param {number} recordIndex 记录索引
+ */
+function highlightAllMatches(recordEl, recordIndex) {
+    if (!searchState || !recordEl) return;
+    const record = records[recordIndex];
+    if (!record) return;
+
+    // 按消息分组（跳过当前命中，橙色单独绘制）
+    // 同时保留每个匹配在 matches 中的下标，供黄色 mark 记录 data-match-idx
+    const matchesByMsg = new Map();
+    searchState.matches.forEach((match, idx) => {
+        if (idx === searchState.currentIdx) return;
+        if (!matchesByMsg.has(match.msgIdx)) matchesByMsg.set(match.msgIdx, []);
+        matchesByMsg.get(match.msgIdx).push({ match, idx });
+    });
+
+    matchesByMsg.forEach((msgMatches, msgIdx) => {
+        const msg = record.messages[msgIdx];
+        if (!msg) return;
+        // 确保消息展开（搜索高亮需要可见内容区）
+        if (msg.collapsed) {
+            msg.collapsed = false;
+            const msgItem = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"]`);
+            if (msgItem) {
+                msgItem.classList.add('expanded');
+                msgItem.classList.remove('collapsed');
+            }
+        }
+        const contentEl = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"] .rmsg-content`);
+        if (!contentEl) return;
+
+        // 同一消息内按 start 降序处理，避免 mark 插入影响后续偏移
+        msgMatches.sort((a, b) => b.match.start - a.match.start);
+        msgMatches.forEach(({ match, idx }) => {
+            const markEl = highlightRange(contentEl, match.start, match.end, 'rlog-search-mark');
+            // 记录匹配下标，供 removeYellowMarkByMatchIdx 准确定位要删除的黄色 mark
+            if (markEl) markEl.dataset.matchIdx = String(idx);
+        });
+    });
+}
+
+/**
+ * 将当前命中滚动到视野内舒适位置
+ * 步骤：
+ *   1. 滚动所在消息的 .rmsg-content 内部，使匹配出现在该滚动容器中
+ *   2. 手动计算 .rlog-list 的 scrollTop，让消息区域出现在固定标题栏下方
+ * 说明：不使用 scrollIntoView——它会递归滚动所有可滚动祖先容器，
+ *       在移动端会连带滚动 ST 主界面（body/#sheld 等），造成整个界面位移。
+ * @param {HTMLElement} markEl 当前高亮的 <mark> 元素
+ * @param {HTMLElement} contentEl 所在 .rmsg-content 元素
+ */
+function scrollToMatch(markEl, contentEl) {
+    if (!markEl || !contentEl) return;
+
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!listEl) return;
+
+    // 1. 消息内部滚动：将 mark 对齐到 contentEl 可视区域中部偏上
+    const contentRect = contentEl.getBoundingClientRect();
+    const markRect = markEl.getBoundingClientRect();
+    const contentScrollTop = contentEl.scrollTop;
+    const relativeTop = markRect.top - contentRect.top + contentScrollTop;
+    // 目标位置：距消息内容区顶部约 25% 高度处（视觉舒适区）
+    const targetScroll = relativeTop - contentRect.height * 0.25;
+    const clampedContentScroll = Math.max(0, targetScroll);
+    contentEl.scrollTo({ top: clampedContentScroll, behavior: 'smooth' });
+
+    // 2. 外层列表滚动：手动定位，避免 scrollIntoView 联动滚动 ST 主界面
+    // 内层平滑滚动尚未完成，但 mark 在 list 中的逻辑位置可由滚动增量推算：
+    //   内层滚动 delta > 0 时内容上移，mark 视觉上移 delta
+    //   滚动后的 mark 视觉 top = markRect.top - delta
+    // 期望 mark 出现在所有 sticky 标题栏（记录标题栏 + 消息标题栏）下方 8px 处
+    const delta = clampedContentScroll - contentScrollTop;
+    const markFinalTop = markRect.top - delta;
+    const listRect = listEl.getBoundingClientRect();
+
+    // 累加两个 sticky 标题栏的高度（吸顶时占用的垂直空间），而非固定 48px：
+    // - .rlog-record-header：吸在列表顶部（高约 40px）
+    // - .rmsg-header：吸在记录标题栏下方（高约 32px+）
+    // 用 offsetHeight 实测可自动兼容桌面/移动端不同高度，以及移动端标题栏换行变高。
+    // 注意：不能测量 getBoundingClientRect().bottom 的视觉位置——
+    // 当 mark 所在消息不在视口内时其 header 并未吸顶，bottom 会位于视口外很远，
+    // 导致目标 scrollTop 被 clamp 到 0（列表滚回顶部）。offsetHeight 不受吸顶状态影响。
+    const recordEl = markEl.closest('.rlog-record');
+    const msgItemEl = markEl.closest('.rmsg-item');
+    let stickyHeight = 0;
+    if (recordEl) {
+        const recordHeaderEl = recordEl.querySelector('.rlog-record-header');
+        if (recordHeaderEl) stickyHeight += recordHeaderEl.offsetHeight;
+    }
+    if (msgItemEl) {
+        const msgHeaderEl = msgItemEl.querySelector('.rmsg-header');
+        if (msgHeaderEl) stickyHeight += msgHeaderEl.offsetHeight;
+    }
+
+    // mark 在列表内容中的逻辑位置（不受滚动状态影响）
+    const markInList = listEl.scrollTop + markFinalTop - listRect.top;
+    // 目标：mark 出现在标题栏下方、列表可视区域约 1/3 高度处（视觉舒适区）
+    // 可见内容高度 = 列表可视高度 - sticky 标题栏占用的高度
+    const visibleHeight = Math.max(0, listEl.clientHeight - stickyHeight);
+    const targetListScroll = markInList - stickyHeight - visibleHeight * 0.33;
+
+    // clamp 到合法滚动范围（避免浏览器静默 clamp 导致意外跳变）
+    const maxListScroll = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+    const clampedListScroll = Math.max(0, Math.min(targetListScroll, maxListScroll));
+
+    // 仅在需要调整时滚动外层（mark 已可见时保持不动，避免触发任何外部滚动）
+    if (Math.abs(clampedListScroll - listEl.scrollTop) > 1) {
+        listEl.scrollTo({ top: clampedListScroll, behavior: 'smooth' });
+    }
+}
+
+/**
+ * 更新搜索框计数显示（如 3/18）
+ */
+function updateSearchCounter() {
+    if (!searchState || !searchState.searchEl) return;
+    const counter = searchState.searchEl.querySelector('.rlog-search-count');
+    if (!counter) return;
+
+    const total = searchState.matches.length;
+    const current = total > 0 ? searchState.currentIdx + 1 : 0;
+    counter.textContent = `${current}/${total}`;
+
+    // 无结果或仅一个结果时禁用上下箭头
+    const prevBtn = searchState.searchEl.querySelector('.rlog-search-prev');
+    const nextBtn = searchState.searchEl.querySelector('.rlog-search-next');
+    if (prevBtn) prevBtn.disabled = total <= 1;
+    if (nextBtn) nextBtn.disabled = total <= 1;
+}
+
+/**
+ * 在指定消息索引处执行搜索，并高亮当前命中 + 滚动到该位置
+ * @param {number} msgIdx 消息索引
+ * @param {number} matchIdx 匹配在 matches 中的下标
+ * @param {boolean} [redrawYellowHighlights=true] 是否重绘普通匹配的黄色高亮
+ *   - true（搜索词变化时）: 清除所有高亮后重新绘制全部黄色匹配
+ *   - false（上下键导航时）: 只清除当前橙色命中，复用已绘制的黄色高亮（性能优化）
+ */
+function applyCurrentMatch(msgIdx, matchIdx, redrawYellowHighlights = true) {
+    if (!searchState) return;
+    const recordIndex = searchState.recordIndex;
+    const record = records[recordIndex];
+    if (!record || !record.messages[msgIdx]) return;
+
+    const listEl = panelEl.querySelector('#rlog-list');
+    const recordEl = listEl.querySelector(`.rlog-record[data-record-index="${recordIndex}"]`);
+    if (!recordEl) return;
+
+    if (redrawYellowHighlights) {
+        // 搜索词变化：清除所有高亮（黄色匹配 + 橙色当前）后重新绘制
+        clearSearchHighlights();
+
+        // 确保记录处于展开状态
+        if (record.collapsed) {
+            record.collapsed = false;
+            recordEl.classList.add('expanded');
+            recordEl.classList.remove('collapsed');
+        }
+
+        // 高亮本条内所有匹配（黄色，跳过当前命中）
+        // 同时会展开所有匹配到的折叠消息
+        highlightAllMatches(recordEl, recordIndex);
+    } else {
+        // 导航跳转：将旧橙色的当前命中降级为黄色（保留 DOM 中的 mark，仅切换类名）
+        // 复用已绘制的黄色高亮，避免全量重绘卡顿
+        const oldIdx = searchState.currentIdx;
+        clearCurrentHighlight(oldIdx);
+
+        // 删除目标位置已有的黄色 mark（如果该位置之前被导航过，会残留黄色 mark）
+        // 必须先删除，否则画新橙色时 DOM 偏移计算会失效
+        removeYellowMarkByMatchIdx(matchIdx);
+
+        // 确保记录处于展开状态（搜索模式打开时记录可能被折叠）
+        if (record.collapsed) {
+            record.collapsed = false;
+            recordEl.classList.add('expanded');
+            recordEl.classList.remove('collapsed');
+        }
+    }
+
+    // 确保当前消息处于展开状态（折叠时内容不可见无法定位）
+    const msg = record.messages[msgIdx];
+    if (msg.collapsed) {
+        msg.collapsed = false;
+        const msgItem = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"]`);
+        if (msgItem) {
+            msgItem.classList.add('expanded');
+            msgItem.classList.remove('collapsed');
+        }
+    }
+
+    const contentEl = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"] .rmsg-content`);
+    if (!contentEl) return;
+
+    // 异步创建滚动条（消息刚展开，需要等布局稳定）
+    setTimeout(() => createScrollbarForContent(contentEl), 50);
+
+    const match = searchState.matches[matchIdx];
+    if (!match) return;
+
+    // 高亮当前命中（橙色）
+    const markEl = highlightRange(contentEl, match.start, match.end, 'rlog-search-mark-current');
+
+    // 更新计数
+    searchState.currentIdx = matchIdx;
+    updateSearchCounter();
+
+    if (markEl) {
+        scrollToMatch(markEl, contentEl);
+    }
+}
+
+/**
+ * 执行搜索（输入关键词变更后由 debounce 调用）
+ * @param {number} recordIndex 记录索引
+ * @param {string} keyword 搜索关键词
+ */
+function performSearch(recordIndex, keyword) {
+    if (!searchState || !panelEl) return;
+
+    // 清空上一次搜索的 matches 与高亮
+    searchState.matches = findMatchesInRecord(recordIndex, keyword);
+    searchState.currentIdx = -1;
+    searchState.keyword = keyword;
+
+    if (!keyword) {
+        clearSearchHighlights();
+        updateSearchCounter();
+        return;
+    }
+
+    if (searchState.matches.length > 0) {
+        // 自动跳转到第一个匹配
+        searchState.currentIdx = 0;
+        applyCurrentMatch(searchState.matches[0].msgIdx, 0);
+    } else {
+        // 无匹配：清除高亮，计数显示 0/0
+        clearSearchHighlights();
+        updateSearchCounter();
+    }
+}
+
+/**
+ * 跳转到下一个/上一个匹配
+ * @param {number} direction 1=下一个, -1=上一个
+ */
+function navigateSearch(direction) {
+    if (!searchState || !searchState.matches || searchState.matches.length === 0) return;
+
+    const total = searchState.matches.length;
+    let nextIdx = searchState.currentIdx + direction;
+    // 循环跳转
+    if (nextIdx >= total) nextIdx = 0;
+    if (nextIdx < 0) nextIdx = total - 1;
+
+    const match = searchState.matches[nextIdx];
+    // 第三个参数 false：导航跳转时只清除橙色当前命中，复用已绘制的黄色高亮（性能优化）
+    applyCurrentMatch(match.msgIdx, nextIdx, false);
+}
+
+/**
+ * 关闭搜索框并重置搜索状态
+ */
+function closeSearch() {
+    resetSearchIfActive();
+}
+
+/**
+ * 为指定记录打开搜索模式（排他原则：一次仅一条记录处于搜索状态）
+ * 点击记录操作区中的放大镜按钮时触发。
+ * @param {number} recordIndex 记录索引
+ */
+function openSearchForRecord(recordIndex) {
+    if (!panelEl) return;
+    // 排他：先关闭任何已有的搜索（包含其它记录或本记录）
+    resetSearchIfActive();
+
+    const listEl = panelEl.querySelector('#rlog-list');
+    const recordEl = listEl.querySelector(`.rlog-record[data-record-index="${recordIndex}"]`);
+    if (!recordEl) return;
+
+    const actionsEl = recordEl.querySelector('.rlog-record-actions');
+    const actionsInner = recordEl.querySelector('.rlog-record-actions-inner');
+    if (!actionsEl || !actionsInner) return;
+
+    // 标记记录为「搜索中」（CSS 隐藏除放大镜外的其他操作按钮与下箭头，
+    // 释放空间给搜索框向右展开覆盖）
+    recordEl.classList.add('rlog-searching');
+
+    // 隐藏记录折叠/展开箭头（▾）—— 用 visibility 保留其空间占位，
+    // 配合 CSS 固定 actions-inner 宽度，保证放大镜位置不被推移
+    const toggleIcon = recordEl.querySelector('.rlog-toggle-icon');
+    if (toggleIcon) toggleIcon.style.visibility = 'hidden';
+
+    // 若记录处于折叠状态，自动展开（搜索高亮需要可见内容区）
+    const record = records[recordIndex];
+    if (record && record.collapsed) {
+        record.collapsed = false;
+        recordEl.classList.add('expanded');
+        recordEl.classList.remove('collapsed');
+        // 展开后为消息内容区懒创建进度条（仅视口内立即创建，其余延迟）
+        queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
+    }
+
+    // 构建搜索框 DOM（不含放大镜：普通放大镜按钮保持原位作为视觉锚点，
+    // 搜索框紧随其右侧展开，占用被隐藏按钮释放的空间）
+    const searchBox = document.createElement('div');
+    searchBox.className = 'rlog-search-box';
+    searchBox.innerHTML = `
+        <div class="rlog-search-input-wrap">
+            <input type="text" class="rlog-search-input" placeholder="搜索..." autocomplete="off" spellcheck="false">
+            <span class="rlog-search-count">0/0</span>
+        </div>
+        <button class="rlog-search-next" title="下一个 (Enter)" disabled>
+            <i class="fa-solid fa-arrow-down"></i>
+        </button>
+        <button class="rlog-search-prev" title="上一个 (Shift+Enter)" disabled>
+            <i class="fa-solid fa-arrow-up"></i>
+        </button>
+    `;
+
+    // 插入到放大镜按钮右侧（放大镜保持原位，搜索框向右展开）
+    const searchBtn = actionsInner.querySelector('.rlog-search-btn');
+    if (searchBtn) {
+        searchBtn.insertAdjacentElement('afterend', searchBox);
+    } else {
+        actionsInner.appendChild(searchBox);
+    }
+
+    // 初始化搜索状态
+    searchState = {
+        recordIndex,
+        keyword: '',
+        matches: [],
+        currentIdx: -1,
+        searchEl: searchBox,
+    };
+
+    // 绑定搜索框内部事件
+    const input = searchBox.querySelector('.rlog-search-input');
+    const prevBtn = searchBox.querySelector('.rlog-search-prev');
+    const nextBtn = searchBox.querySelector('.rlog-search-next');
+
+    /** @type {boolean} 输入法组合状态标志（拼音未上屏时 input 事件不触发搜索） */
+    let isComposing = false;
+    /** 防抖搜索调度函数：input 事件与 compositionend 共用 */
+    const scheduleSearch = () => {
+        if (searchDebounceTimer !== null) {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = null;
+        }
+        searchDebounceTimer = setTimeout(() => {
+            searchDebounceTimer = null;
+            performSearch(recordIndex, input.value);
+        }, SEARCH_DEBOUNCE_MS);
+    };
+
+    // 输入法组合开始：置标志，组合期间的 input 事件全部跳过
+    input.addEventListener('compositionstart', () => { isComposing = true; });
+    // 输入法组合结束（文字已上屏）：清除标志并补一次搜索（组合期间可能错过了 input）
+    input.addEventListener('compositionend', () => {
+        isComposing = false;
+        scheduleSearch();
+    });
+
+    // 输入实时搜索（debounce 防抖），组合阶段跳过
+    input.addEventListener('input', (e) => {
+        if (isComposing || e.isComposing || e.keyCode === 229) return;
+        scheduleSearch();
+    });
+
+    // 键盘快捷键：Enter 下一个 / Shift+Enter 上一个 / Esc 关闭
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.shiftKey) {
+                navigateSearch(-1);
+            } else {
+                navigateSearch(1);
+            }
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeSearch();
+        }
+    });
+
+    prevBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigateSearch(-1);
+    });
+
+    nextBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigateSearch(1);
+    });
+
+    // 自动聚焦输入框
+    setTimeout(() => {
+        if (input && searchState && searchState.searchEl === searchBox) {
+            input.focus();
+        }
+    }, 50);
+}
+
 function getFullPromptText(record) {
     return record.messages
         .map((m) => `[${m.role}]: ${m.content}`)
@@ -1541,6 +2247,9 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
 function renderPanelContent() {
     if (!panelEl) return;
 
+    // 重建 DOM 前必须先清理搜索状态（搜索高亮、搜索框引用旧 DOM 节点会失效）
+    resetSearchIfActive();
+
     const listEl = panelEl.querySelector('#rlog-list');
     if (!listEl) return;
 
@@ -1555,6 +2264,7 @@ function renderPanelContent() {
             ? '暂无请求记录，请发送消息后查看。'
             : '记录功能已关闭，请点击电源图标开启。';
         listEl.innerHTML = `<div class="rlog-empty">${escapeHtml(emptyMsg)}</div>`;
+        panelContentDirty = false;
         return;
     }
     panelEl.classList.remove('rlog-empty-list');
@@ -1587,6 +2297,9 @@ function renderPanelContent() {
                         </div>
                         <div class="rlog-record-actions">
                             <div class="rlog-record-actions-inner" style="display:flex; gap:4px; align-items:center;">
+                                <button class="rlog-search-btn" data-record="${idx}" title="搜索本条记录">
+                                    <i class="fa-solid fa-magnifying-glass"></i>
+                                </button>
                                 <button class="rlog-msg-expand-btn" data-record="${idx}" title="展开所有消息">
                                     <i class="fa-solid fa-expand"></i>
                                 </button>
@@ -1615,6 +2328,9 @@ function renderPanelContent() {
 
     // 为消息内容区创建 overlay 进度条
     attachScrollIndicators(listEl);
+
+    // 渲染完成，清除脏标记（下次打开面板时无需重建 DOM）
+    panelContentDirty = false;
 }
 
 /**
@@ -1645,17 +2361,42 @@ function bindListEvents(listEl) {
     });
 
     listEl.querySelectorAll('.rlog-record-header').forEach((header) => {
+        /** @type {boolean} 本次按下的起点是否在搜索框内（拖动选中文字越界时不触发折叠） */
+        let mouseDownInSearchBox = false;
+        header.addEventListener('mousedown', (e) => {
+            mouseDownInSearchBox = e.target.closest('.rlog-search-box') !== null;
+        });
+        header.addEventListener('touchstart', (e) => {
+            mouseDownInSearchBox = e.target.closest('.rlog-search-box') !== null;
+        });
         header.addEventListener('click', function (e) {
             if (e.target.closest('button')) return;
+            // 搜索框区域（输入框/计数/空白）不触发折叠/展开，保持搜索状态稳定
+            if (e.target.closest('.rlog-search-box')) return;
+            // 从搜索框内按下并拖动到外部松开时，click 目标为两者的共同祖先（header），
+            // 此时不应触发折叠/展开，否则拖动选中文字越界会意外取消搜索面板
+            if (mouseDownInSearchBox) return;
             const recordEl = this.closest('.rlog-record');
             const idx = Number(recordEl.dataset.recordIndex);
-            const wasCollapsed = records[idx] ? records[idx].collapsed : false;
+            // 展开/折叠单条记录时保持滚动位置不变（标题栏固定在视口，内容只向下展开）
             preserveScrollTop(() => {
                 toggleRecordCollapse(idx, recordEl);
             });
-            // 折叠后再展开时，返回顶部最新一条记录（内部消息的折叠/展开状态不重置）
-            if (wasCollapsed) {
-                listEl.scrollTop = 0;
+        });
+    });
+
+    listEl.querySelectorAll('.rlog-search-btn').forEach((btn) => {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const idx = Number(this.dataset.record);
+            // 放大镜点击逻辑：
+            // - 未展开搜索菜单时 → 开启搜索菜单
+            // - 已展开当前记录的搜索菜单 → 关闭搜索菜单
+            // - 已展开其他记录的搜索菜单 → 关闭其他记录并开启当前记录的搜索
+            if (searchState && searchState.recordIndex === idx) {
+                closeSearch();
+            } else {
+                openSearchForRecord(idx);
             }
         });
     });
@@ -1719,6 +2460,8 @@ function bindListEvents(listEl) {
 }
 
 function toggleRecordCollapse(index, recordEl) {
+    // 折叠记录时退出搜索模式（折叠会改变内容区可见性，搜索状态不应保留）
+    resetSearchIfActive();
     records[index].collapsed = !records[index].collapsed;
     if (records[index].collapsed) {
         recordEl.classList.add('collapsed');
@@ -1726,14 +2469,14 @@ function toggleRecordCollapse(index, recordEl) {
     } else {
         recordEl.classList.add('expanded');
         recordEl.classList.remove('collapsed');
-        // 展开记录后，为所有已展开消息的内容区创建进度条
-        recordEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
-            if (contentEl.offsetParent !== null) createScrollbarForContent(contentEl);
-        });
+        // 展开记录后，为消息内容区懒创建进度条（仅视口内立即创建，其余延迟）
+        queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
     }
 }
 
 function toggleMessageCollapse(recIdx, msgIdx, msgItem) {
+    // 折叠/展开消息属于单条记录内部操作，不退出搜索模式
+    //（搜索高亮保留在 DOM 中，折叠只是隐藏内容，展开后自动恢复可见）
     records[recIdx].messages[msgIdx].collapsed = !records[recIdx].messages[msgIdx].collapsed;
     if (records[recIdx].messages[msgIdx].collapsed) {
         msgItem.classList.add('collapsed');
@@ -1779,6 +2522,8 @@ function togglePanelWindow() {
  * 标题栏「折叠所有条目」按钮 — 将所有记录折叠，同时将每条记录内的所有消息也折叠
  */
 function collapseAllEntries() {
+    // 折叠全部条目前退出搜索模式
+    resetSearchIfActive();
     if (records.length === 0) return;
     records.forEach((r, i) => {
         r.collapsed = true;
@@ -1805,6 +2550,8 @@ function collapseAllEntries() {
  * @param {number} index 记录索引
  */
 function collapseRecordMessages(index) {
+    // 折叠本条记录的所有消息前退出搜索模式（搜索中的消息折叠后高亮无意义）
+    resetSearchIfActive();
     const record = records[index];
     if (!record || !record.messages) return;
 
@@ -1839,10 +2586,8 @@ function expandRecordMessages(index) {
             el.classList.add('expanded');
             el.classList.remove('collapsed');
         });
-        // 为所有内容区创建进度条
-        recordEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
-            if (contentEl.offsetParent !== null) createScrollbarForContent(contentEl);
-        });
+        // 为消息内容区懒创建进度条（仅视口内立即创建，其余延迟）
+        queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
     }
 }
 
@@ -1853,6 +2598,7 @@ function expandRecordMessages(index) {
 function deleteRecord(index) {
     if (index < 0 || index >= records.length) return;
     records.splice(index, 1);
+    panelContentDirty = true;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
     }
@@ -1922,9 +2668,155 @@ function escapeHtml(str) {
 
 /**
  * 存储每个 .rmsg-content 对应的进度条清理数据
- * Map key: contentEl -> { resizeObserver, scrollHandler, hitboxEl }
+ * Map key: contentEl -> { scrollHandler, hitboxEl, thumbEl }
  */
 const scrollbarCleanups = new Map();
+
+/** @type {Set<HTMLElement>} 所有已创建进度条的 .rmsg-content 元素（供共享 ResizeObserver 批量更新） */
+const scrollbarElements = new Set();
+
+/** @type {Set<HTMLElement>} 等待进入视口后懒创建进度条的 .rmsg-content 元素 */
+const pendingScrollbarContentEls = new Set();
+
+/** @type {ResizeObserver|null} 共享 ResizeObserver：所有进度条共用一个，替代每元素一个 */
+let sharedResizeObserver = null;
+
+/** @type {IntersectionObserver|null} 懒创建进度条的 IntersectionObserver */
+let scrollbarLazyObserver = null;
+
+/** @type {boolean} 是否已有 RAF 排队更新 thumb */
+let thumbUpdateQueued = false;
+
+/** @type {boolean} 是否等待全量更新所有进度条（ResizeObserver 触发） */
+let thumbFullUpdatePending = false;
+
+/** @type {HTMLElement|null} 单个需要更新 thumb 的 contentEl（scroll 事件触发） */
+let thumbPendingElement = null;
+
+/**
+ * 确保共享 ResizeObserver 已创建
+ * 所有进度条统一由它监听，回调中批量更新 thumb，避免 100+ 个独立 ResizeObserver 的额外开销
+ */
+function ensureSharedResizeObserver() {
+    if (sharedResizeObserver) return;
+    sharedResizeObserver = new ResizeObserver(() => {
+        // 任一内容区尺寸变化：全量更新所有进度条的 thumb
+        // 回调本身由浏览器在布局后批量触发，这里再合并到同一 RAF 帧
+        requestThumbUpdate();
+    });
+}
+
+/**
+ * 确保懒创建 IntersectionObserver 已创建
+ * 进度条只在内容区进入视口（或接近视口）时才创建，
+ * 避免展开 100+ 消息时瞬间创建 100+ 进度条导致的同步 layout 卡顿。
+ * rootMargin 200px：提前创建，保证滚动到之前进度条已就绪。
+ */
+function ensureScrollbarLazyObserver() {
+    if (scrollbarLazyObserver) return;
+    scrollbarLazyObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const contentEl = entry.target;
+                pendingScrollbarContentEls.delete(contentEl);
+                scrollbarLazyObserver.unobserve(contentEl);
+                createScrollbarForContent(contentEl);
+            }
+        });
+    }, { root: null, rootMargin: '200px 0px', threshold: 0 });
+}
+
+/**
+ * 请求更新进度条 thumb 位置（RAF 批处理）
+ * - 不传参：全量更新所有活跃进度条（ResizeObserver 触发）
+ * - 传 contentEl：只更新该元素对应的进度条（scroll 事件触发）
+ * 同一帧内多次请求合并为一次更新，避免高频事件触发连续强制 layout。
+ * @param {HTMLElement} [contentEl] 需要更新的内容区元素；不传则全量更新
+ */
+function requestThumbUpdate(contentEl) {
+    if (contentEl) {
+        thumbPendingElement = contentEl;
+    } else {
+        thumbFullUpdatePending = true;
+    }
+    if (thumbUpdateQueued) return;
+    thumbUpdateQueued = true;
+    requestAnimationFrame(() => {
+        thumbUpdateQueued = false;
+        if (thumbFullUpdatePending) {
+            thumbFullUpdatePending = false;
+            thumbPendingElement = null;
+            scrollbarElements.forEach((el) => {
+                const cleanup = scrollbarCleanups.get(el);
+                if (cleanup) updateScrollbarThumb(el, cleanup);
+            });
+        } else if (thumbPendingElement) {
+            const el = thumbPendingElement;
+            thumbPendingElement = null;
+            const cleanup = scrollbarCleanups.get(el);
+            if (cleanup) updateScrollbarThumb(el, cleanup);
+        }
+    });
+}
+
+/**
+ * 根据 contentEl 当前滚动状态更新其进度条 thumb 位置
+ * @param {HTMLElement} contentEl 内容区元素
+ * @param {object} cleanup 该进度条的清理数据（含 hitboxEl/thumbEl）
+ */
+function updateScrollbarThumb(contentEl, cleanup) {
+    const hitbox = cleanup.hitboxEl;
+    const thumb = cleanup.thumbEl;
+    if (!hitbox || !thumb) return;
+
+    const scrollHeight = contentEl.scrollHeight;
+    const clientHeight = contentEl.clientHeight;
+    const scrollTop = contentEl.scrollTop;
+    const maxScroll = scrollHeight - clientHeight;
+
+    if (maxScroll <= 0) {
+        hitbox.style.display = 'none';
+        return;
+    }
+    hitbox.style.display = '';
+
+    // hitbox 对齐 contentEl 的位置（因为挂载在 .rmsg-item 上而非 contentEl 内部）
+    const contentTop = contentEl.offsetTop;
+    hitbox.style.top = contentTop + 'px';
+    hitbox.style.height = clientHeight + 'px';
+
+    // 轨道可用高度（track 的 top:4px, bottom:4px）
+    const trackHeight = clientHeight - 8;
+
+    // 滑块高度 = 可见比例 × 轨道高度，最小 20px
+    const thumbRatio = clientHeight / scrollHeight;
+    const thumbHeight = Math.max(20, thumbRatio * trackHeight);
+    thumb.style.height = thumbHeight + 'px';
+
+    // 滑块可移动范围
+    const thumbRange = trackHeight - thumbHeight;
+
+    // 滑块位置 = 当前滚动比例 × 可移动范围
+    const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * thumbRange : 0;
+    thumb.style.top = thumbTop.toFixed(1) + 'px';
+}
+
+/**
+ * 为一批 .rmsg-content 元素按需（懒加载）创建进度条
+ * 元素进入视口或接近视口时才真正创建进度条。
+ * 已在观察队列中或有进度条的元素自动跳过。
+ * @param {NodeListOf<HTMLElement>|HTMLElement[]|Array} contentEls 内容区元素集合
+ */
+function queueScrollbarsForEls(contentEls) {
+    ensureScrollbarLazyObserver();
+    contentEls.forEach((contentEl) => {
+        if (!contentEl || !contentEl.classList || !contentEl.classList.contains('rmsg-content')) return;
+        if (pendingScrollbarContentEls.has(contentEl)) return;
+        if (scrollbarCleanups.has(contentEl)) return;
+        pendingScrollbarContentEls.add(contentEl);
+        scrollbarLazyObserver.observe(contentEl);
+    });
+}
 
 /**
  * 为单个 .rmsg-content 元素创建 overlay 进度条
@@ -1935,6 +2827,7 @@ function createScrollbarForContent(contentEl) {
     detachScrollbarForContent(contentEl);
 
     // 内容不需要滚动时不需要进度条
+    // 注意：这里读取 scrollHeight 布局值不可避免，但仅在进入视口时才执行（懒创建 + 单个元素）
     if (contentEl.scrollHeight <= contentEl.clientHeight) return;
 
     // 挂载目标：.rmsg-item（contentEl 的父容器），而不是 contentEl 内部
@@ -1967,55 +2860,33 @@ function createScrollbarForContent(contentEl) {
     hitbox.appendChild(dot);
     container.appendChild(hitbox);
 
-    /**
-     * 根据当前滚动位置和内容高度更新滑块
-     */
-    function updateThumb() {
-        const scrollHeight = contentEl.scrollHeight;
-        const clientHeight = contentEl.clientHeight;
-        const scrollTop = contentEl.scrollTop;
-        const maxScroll = scrollHeight - clientHeight;
+    // 记录到活跃元素集合（供共享 ResizeObserver 批量更新）
+    scrollbarElements.add(contentEl);
 
-        if (maxScroll <= 0) {
-            hitbox.style.display = 'none';
-            return;
-        }
-        hitbox.style.display = '';
+    // 创建清理数据（scrollbarCleanups 注册后即可被 requestThumbUpdate 使用）
+    const cleanup = {
+        scrollHandler: null,
+        hitboxEl: hitbox,
+        thumbEl: thumb,
+    };
 
-        // hitbox 对齐 contentEl 的位置（因为挂载在 .rmsg-item 上而非 contentEl 内部）
-        const contentTop = contentEl.offsetTop;
-        hitbox.style.top = contentTop + 'px';
-        hitbox.style.height = clientHeight + 'px';
+    // 初始更新：合并到 RAF 批处理（当前帧剩余 layout 在下一帧统一完成）
+    // 注意：需要先注册 cleanup 才能被 updateScrollbarThumb 找到
+    scrollbarCleanups.set(contentEl, cleanup);
+    requestThumbUpdate(contentEl);
 
-        // 轨道可用高度（track 的 top:4px, bottom:4px）
-        const trackHeight = clientHeight - 8;
-
-        // 滑块高度 = 可见比例 × 轨道高度，最小 20px
-        const thumbRatio = clientHeight / scrollHeight;
-        const thumbHeight = Math.max(20, thumbRatio * trackHeight);
-        thumb.style.height = thumbHeight + 'px';
-
-        // 滑块可移动范围
-        const thumbRange = trackHeight - thumbHeight;
-
-        // 滑块位置 = 当前滚动比例 × 可移动范围
-        const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * thumbRange : 0;
-        thumb.style.top = thumbTop.toFixed(1) + 'px';
-
-    }
-
-    // 初始更新
-    updateThumb();
-
-    // 监听滚动事件
-    const onScroll = () => updateThumb();
+    // 监听滚动事件（RAF 批处理，避免高频滚动触发连续强制 layout）
+    const onScroll = () => requestThumbUpdate(contentEl);
+    cleanup.scrollHandler = onScroll;
     contentEl.addEventListener('scroll', onScroll, { passive: true });
 
-    // ResizeObserver 监听内容高度变化（展开/折叠文本等）
-    const resizeObserver = new ResizeObserver(() => {
-        updateThumb();
-    });
-    resizeObserver.observe(contentEl);
+    // 确保共享 ResizeObserver 已注册覆盖此元素
+    ensureSharedResizeObserver();
+    if (sharedResizeObserver) {
+        try {
+            sharedResizeObserver.observe(contentEl);
+        } catch (e) { /* ignore */ }
+    }
 
     // --- 交互：pointer 事件 ---
     // 圆点跟随手指位置（不跟随 thumb），可到达轨道两端
@@ -2115,12 +2986,6 @@ function createScrollbarForContent(contentEl) {
     // lostpointercapture 作为兜底清理
     hitbox.addEventListener('lostpointercapture', onPointerUp);
 
-    // 存储清理数据
-    scrollbarCleanups.set(contentEl, {
-        resizeObserver,
-        scrollHandler: onScroll,
-        hitboxEl: hitbox,
-    });
 }
 
 /**
@@ -2133,8 +2998,16 @@ function detachScrollbarForContent(contentEl) {
 
     // 移除 scroll 事件监听
     contentEl.removeEventListener('scroll', cleanup.scrollHandler);
-    // 断开 ResizeObserver
-    cleanup.resizeObserver.disconnect();
+    // 若该元素被共享 ResizeObserver 监听，解除监听
+    if (sharedResizeObserver) {
+        try { sharedResizeObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
+    }
+    // 从活跃集合与懒观察集合中移除
+    scrollbarElements.delete(contentEl);
+    pendingScrollbarContentEls.delete(contentEl);
+    if (scrollbarLazyObserver) {
+        try { scrollbarLazyObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
+    }
     // 从 DOM 中移除 hitbox
     if (cleanup.hitboxEl && cleanup.hitboxEl.parentNode) {
         cleanup.hitboxEl.remove();
@@ -2145,6 +3018,8 @@ function detachScrollbarForContent(contentEl) {
 /**
  * 为列表中的所有 .rmsg-content 创建 overlay 进度条
  * 用于 renderPanelContent 后挂载，也用于展开/折叠后刷新
+ * 改为懒创建：所有 .rmsg-content 进入视口（或接近视口）时才创建进度条，
+ * 避免展开/重新渲染大量消息时一次性创建大量进度条导致的卡顿。
  * @param {HTMLElement} listEl 列表容器元素
  */
 function attachScrollIndicators(listEl) {
@@ -2153,12 +3028,8 @@ function attachScrollIndicators(listEl) {
         detachScrollbarForContent(contentEl);
     });
 
-    // 为所有可见的 .rmsg-content 创建进度条
-    listEl.querySelectorAll('.rmsg-content').forEach(contentEl => {
-        if (contentEl.offsetParent !== null) {
-            createScrollbarForContent(contentEl);
-        }
-    });
+    // 所有 .rmsg-content 进入懒创建观察队列（IntersectionObserver 自动按视口按需创建）
+    queueScrollbarsForEls(listEl.querySelectorAll('.rmsg-content'));
 }
 
 
@@ -2367,11 +3238,32 @@ function buildUI() {
         
         // 触发主题切换专属缩放特效（不在打开窗口时触发）
         panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark');
-        void panelEl.offsetWidth; // 强制回流以重置动画状态
-        if (isLightTheme) {
-            panelEl.classList.add('rlog-anim-light');
+
+        // 移动端（窄屏）禁用颜色过渡快速切换：大量展开消息时同时做 0.35s 渐变会明显卡顿，
+        // 主题色在双 RAF 后瞬间切换完成再播放缩放动画；
+        // 桌面端保留原有渐变特效（void offsetWidth 强制回流以重置动画状态）。
+        // 注：禁用过渡不影响最终颜色，只是不播放颜色渐变过程。
+        const isMobile = window.matchMedia('(max-width: 768px)').matches;
+        if (isMobile) {
+            panelEl.classList.add('rlog-theme-transitioning');
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    panelEl.classList.remove('rlog-theme-transitioning');
+                    if (isLightTheme) {
+                        panelEl.classList.add('rlog-anim-light');
+                    } else {
+                        panelEl.classList.add('rlog-anim-dark');
+                    }
+                });
+            });
         } else {
-            panelEl.classList.add('rlog-anim-dark');
+            // 桌面端：保留渐变过渡 + 强制回流重启动画
+            void panelEl.offsetWidth;
+            if (isLightTheme) {
+                panelEl.classList.add('rlog-anim-light');
+            } else {
+                panelEl.classList.add('rlog-anim-dark');
+            }
         }
 
         // 动画结束后自动清除动画类，防止关闭再打开窗口时重新触发残留动画
@@ -2436,7 +3328,10 @@ function showPanel() {
     panelEl.style.display = 'flex';
     isPanelVisible = true;
     if (toggleBtn) toggleBtn.classList.add('active');
-    renderPanelContent();
+    // 仅当数据/渲染设置变化时才重建 DOM；否则保留原有 DOM，避免大量展开消息时打开面板卡顿
+    if (panelContentDirty) {
+        renderPanelContent();
+    }
 
     // 在面板显示后检查是否需要进行引导
     if (window.__RLogTour && typeof window.__RLogTour.check === 'function') {
@@ -2445,6 +3340,8 @@ function showPanel() {
 }
 
 function hidePanel() {
+    // 关闭面板时退出搜索模式
+    resetSearchIfActive();
     if (panelEl) {
         panelEl.style.display = 'none';
         // 关闭面板时清理残留的主题切换动画类，防止下次打开时重播

@@ -217,7 +217,7 @@
     width: 16px;
     height: 16px;
     cursor: nwse-resize;
-    z-index: 10;
+    z-index: 30; /* 高于单条记录标题栏 (z-index:20)，防止滚动时 sticky 标题栏遮挡小三角 */
     background: transparent;
     opacity: 0.5;
     transition: opacity 0.15s;
@@ -429,11 +429,12 @@
 .rlog-record.collapsed .rlog-toggle-icon { transform: rotate(-90deg); }
 .rlog-record.expanded .rlog-toggle-icon { transform: rotate(0deg); }
 
-/* 折叠时瞬间隐藏操作按钮（保留箭头） */
+/* 折叠时瞬间隐藏操作按钮（保留箭头），搜索按钮与同排其他按钮行为一致 */
 .rlog-record.collapsed .rlog-copy-all-btn,
 .rlog-record.collapsed .rlog-msg-collapse-btn,
 .rlog-record.collapsed .rlog-msg-expand-btn,
-.rlog-record.collapsed .rlog-delete-record-btn {
+.rlog-record.collapsed .rlog-delete-record-btn,
+.rlog-record.collapsed .rlog-search-btn {
     display: none;
 }
 
@@ -441,6 +442,250 @@
 .rlog-record-actions {
     justify-content: flex-end;
     min-height: 24px;
+}
+
+/* ── 搜索功能 ──────────────────────────────────── */
+
+/* 记录操作区放大镜按钮（普通状态） */
+.rlog-search-btn {
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #6b7280;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.rlog-search-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: #111827;
+}
+
+/* ── 搜索模式状态：其他操作按钮用 visibility:hidden 保留宽度占位 ──
+   关键: 不用 display:none（会释放空间导致放大镜位置被推移），
+   而是隐藏但保留空间，让 actions-inner 宽度与普通状态完全一致，
+   放大镜按钮 (.rlog-search-btn) 因此保持在原位不动。 */
+.rlog-record.rlog-searching .rlog-msg-expand-btn,
+.rlog-record.rlog-searching .rlog-msg-collapse-btn,
+.rlog-record.rlog-searching .rlog-copy-all-btn,
+.rlog-record.rlog-searching .rlog-delete-record-btn {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 搜索模式激活时放大镜图标高亮（与单条记录标题栏角色名蓝色一致） */
+.rlog-record.rlog-searching .rlog-search-btn {
+    color: #124e78;
+}
+.rlog-record.rlog-searching .rlog-search-btn:hover {
+    background: rgba(18, 78, 120, 0.08);
+    color: #0d3a5a;
+}
+
+/* 记录操作区作为搜索框绝对定位的参考容器 */
+.rlog-record-actions-inner {
+    position: relative;
+}
+
+/* 搜索框容器（无边框、无底色）
+   绝对定位从放大镜右边缘 (24px = 放大镜宽度，紧贴无间隙) 延伸到折叠/展开箭头右边缘：
+   right: -24px = 折叠箭头占位 (20px 宽 + 4px gap)，
+   使上下箭头右边缘与搜索框展开前折叠箭头的右边缘对齐，
+   消除右侧空余空间，避免输入框和计数被压缩得过窄。
+   不向左扩展 → 放大镜图标位置完全不变 */
+.rlog-search-box {
+    display: flex;
+    align-items: center;
+    gap: 0; /* 零间距：紧贴排列，最大限度让宽度留给输入框 */
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden; /* 内容超出时裁剪，保证按钮不被推出容器 */
+    animation: rlog-search-expand 0.18s ease-out;
+}
+.rlog-record.rlog-searching .rlog-search-box {
+    position: absolute;
+    left: 24px; /* 紧贴放大镜右边缘，消除间隙让输入框更宽 */
+    right: -24px; /* 向右扩展覆盖折叠箭头占位，对齐折叠箭头右边缘 */
+    top: -8px; /* 向上扩展覆盖标题栏上方 8px padding：点击此区域不退出搜索（原 top:0 仅覆盖按钮高度，上方 padding 空白误触会折叠记录） */
+    bottom: -8px; /* 向下扩展覆盖标题栏下方 8px padding：点击此区域不退出搜索（原因同上） */
+}
+@keyframes rlog-search-expand {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* 搜索框内部按钮（上下箭头）
+   统一 20x20：比外部操作按钮更紧凑，给输入框留出更多空间
+   （右边缘仍贴齐搜索框右侧，位置不动） */
+.rlog-search-prev,
+.rlog-search-next {
+    padding: 0;
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #6b7280;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative; /* 为图标绝对定位居中提供参考 */
+}
+.rlog-search-prev:hover:not(:disabled),
+.rlog-search-next:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.05);
+    color: #111827;
+}
+/* 输入框（含计数）与下一条按钮之间 1px 间距 */
+.rlog-search-next {
+    margin-left: 1px;
+}
+
+/* Font Awesome 图标在按钮内强制几何居中（兼容所有平台）：
+   不同浏览器/移动端平台对 Font Awesome 伪元素字形的行盒渲染存在差异
+   （基线位置、字形内白边不一致），导致 flex 居中时视觉上偏上/偏下。
+   关键：绝对定位必须直接作用于 ::before 伪元素（图标字形本体），
+   而不是包裹它的 <i>——因为 <i> 的行盒仍然受 line-height 和字形
+   渲染差异影响，盒子居中 ≠ 字形视觉居中。
+   将字形本体直接按按钮几何中心定位，彻底脱离行盒/基线/内白边影响。 */
+.rlog-search-prev i,
+.rlog-search-next i {
+    position: relative; /* 作为 ::before 字形绝对定位的参考容器 */
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.rlog-search-prev i::before,
+.rlog-search-next i::before {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    line-height: 1;
+}
+
+/* 搜索输入框容器（带底色圆角：输入框 + 计数共用底色）
+   弹性占满剩余空间，受 min/max 约束，空间不足时自动收缩。
+   max-width 220px：在容器空间充足时给输入框更大的可用宽度。
+   内部结构：透明输入框（弹性收缩）+ 计数（不收缩）→
+   数字变宽（如 100/100）时自然向左挤占输入框文字空间。 */
+.rlog-search-input-wrap {
+    flex: 1 1 auto;
+    width: 140px;           /* flex-basis 基础宽度：空间充足时输入框区域的基础大小 */
+    min-width: 0;           /* 可完全弹性收缩，空间不足时优先让出 */
+    max-width: 220px;
+    margin-left: 1px;       /* 放大镜与输入框之间 1px 间距 */
+    height: 24px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.05);
+    overflow: hidden;       /* 防止内容溢出圆角 */
+    padding-right: 3px;     /* 计数与背景底色右侧边框的固定边距：数字变宽时向左扩展，边距保持不变 */
+    transition: background 0.15s ease;
+}
+.rlog-search-input-wrap:hover {
+    background: rgba(0, 0, 0, 0.08);
+}
+.rlog-search-input-wrap:focus-within {
+    background: rgba(0, 0, 0, 0.08);
+}
+
+/* 搜索输入框（透明背景，融入容器底色；文字区域弹性收缩）
+   使用 !important 强制清除 input 的边框/outline/阴影/默认外观，
+   防止 ST 宿主页面全局样式（如 input:focus-visible）给 input 强加边框，
+   导致输入区域与计数之间出现细线。 */
+.rlog-search-input {
+    flex: 1 1 auto;
+    min-width: 0;           /* 可完全弹性收缩，计数字符变宽时优先让出 */
+    height: 100%;
+    padding: 0 8px;
+    border: none !important;
+    border-radius: 0;
+    background: transparent !important;
+    color: #1f2937;
+    font-size: 12px;
+    font-family: inherit;
+    line-height: 1; /* 与其他按钮一致：防止输入框文本行高导致垂直偏移 */
+    outline: none !important;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    overflow: hidden;           /* 搜索文本过长时省略，不撑开布局 */
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.rlog-search-input::placeholder {
+    color: #9ca3af;
+}
+
+/* 匹配计数显示（如 3/18）
+   与外部操作按钮一致：同高，保持在水平中线上。
+   对齐方式：右对齐（justify-content: flex-end）→ 数字右侧始终贴着
+   wrapper 的 padding-right 边缘，右侧边距恒定不变；
+   短数字时 span 宽度 = 内容宽度（min-width:0），不浪费空间；
+   数字变宽（如 100/100）时 span 向左扩展，挤压输入框（弹性收缩），
+   右侧边距不受影响。 */
+.rlog-search-count {
+    font-size: 11px;
+    font-family: inherit; /* 与其他面板文字一致，不使用等宽字体 */
+    font-variant-numeric: tabular-nums;
+    color: #6b7280;
+    white-space: nowrap;
+    min-width: 0;           /* 宽度完全由内容决定：短数字紧凑，长数字向左扩展 */
+    max-width: 48px;        /* 限制最大宽度，防止挤占按钮空间 */
+    text-align: right;
+    flex-shrink: 0;         /* 不参与收缩：优先压缩输入框，计数保持完整 */
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end; /* 右对齐：数字增多向左挤，右侧边距恒定 */
+    align-self: stretch; /* 拉伸到与相邻按钮同高，自动适配 24px/20px */
+    line-height: 1;
+    overflow: hidden;       /* 超出 max-width 时省略 */
+    text-overflow: ellipsis;
+}
+
+/* 禁用态（无结果或仅一个结果时箭头灰显） */
+.rlog-search-prev:disabled,
+.rlog-search-next:disabled {
+    color: #c1c5cc;
+    cursor: default;
+}
+
+/* 搜索高亮（普通匹配：明黄色，明暗统一） */
+mark.rlog-search-mark {
+    background: #FFFF00;
+    color: inherit;
+    padding: 0;
+    border-radius: 1px;
+}
+/* 搜索高亮（当前命中：橙黄色，明暗统一） */
+mark.rlog-search-mark-current {
+    background: #FF9632;
+    color: inherit;
+    padding: 0;
+    border-radius: 1px;
+}
+/* 高亮滚动预留偏移：为 sticky 标题栏留出位置 */
+mark.rlog-search-mark,
+mark.rlog-search-mark-current {
+    scroll-margin-top: 56px;
+}
+
+/* 折叠状态时隐藏搜索框（搜索状态会在折叠时重置，这里仅兜底防止闪烁） */
+.rlog-record.collapsed .rlog-search-box {
+    display: none;
 }
 
 /* ── 记录内部消息列表 ──────────────────────────── */
@@ -769,12 +1014,51 @@
     .rlog-copy-all-btn,
     .rlog-msg-collapse-btn,
     .rlog-msg-expand-btn,
-    .rlog-delete-record-btn {
+    .rlog-delete-record-btn,
+    .rlog-search-btn {
         width: 20px;
         height: 20px;
         font-size: 11px;
     }
-    .rlog-toggle-icon { font-size: 12px; width: 16px; }
+    .rlog-toggle-icon { font-size: 12px; width: 16px; height: 20px; }
+
+    /* 移动端操作区容器高度与按钮统一（桌面端为 24px 对应 24px 按钮，移动端按钮为 20px 需同步覆盖） */
+    .rlog-record-actions {
+        min-height: 20px;
+    }
+
+    /* 移动端搜索框适配（按钮统一 20x20，与外部操作按钮一致） */
+    .rlog-search-box {
+        gap: 0;
+    }
+    /* 移动端搜索框从放大镜右边缘 (20px = 放大镜宽度，紧贴无间隙) 开始；
+       移动端折叠箭头 16px 宽 + 4px gap = 20px，向右扩展 20px 对齐 */
+    .rlog-record.rlog-searching .rlog-search-box {
+        left: 20px;
+        right: -20px;
+    }
+    .rlog-search-prev,
+    .rlog-search-next {
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+    }
+    .rlog-search-input-wrap {
+        width: 90px;
+        min-width: 0;       /* 移动端同样可完全弹性收缩 */
+        max-width: 180px;   /* 移动端空间充足时同样放宽，给输入框更大宽度 */
+        height: 20px;
+        border-radius: 3px;
+    }
+    .rlog-search-input {
+        font-size: 11px;
+        padding: 0 6px;
+    }
+    .rlog-search-count {
+        font-size: 10px;
+        min-width: 0;           /* 移动端同样由内容决定宽度 */
+        max-width: 44px;        /* 移动端更窄，防止挤占按钮 */
+    }
     .rlog-record-header {
         padding: 8px 10px;
     }
@@ -832,6 +1116,26 @@
     #rlog-panel.rlog-anim-light,
     #rlog-panel.rlog-anim-dark {
         animation-duration: 0.2s;
+    }
+
+    /* 主题切换临时禁用过渡（仅移动端）：
+       大量展开消息时，数百个元素同时做 0.35s 颜色渐变会明显卡顿。
+       JS 在主题切换前添加此 class，双 RAF 后移除。
+       桌面端保留渐变特效，不应用此规则。 */
+    .rlog-theme-transitioning *,
+    .rlog-theme-transitioning {
+        transition: none !important;
+    }
+
+    /* 「更多」抽屉禁用过渡动画（仅移动端）：
+       抽屉展开时 max-width 0→300px 的 0.3s 过渡会持续改变面板头部 flex 布局，
+       移动端 header 可换行时导致面板 body 高度连续变化，
+       数百个 sticky 消息标题（.rmsg-header）被迫逐帧重排，造成明显卡顿。
+       禁用过渡后展开/收起一次性完成，仅触发一次 reflow，响应更流畅。
+       桌面端保留原有横向滑出动画，不受影响。
+       保持原有显示方式（行内展开），仅禁用过渡。 */
+    .rlog-more-drawer {
+        transition: none;
     }
 }
 
@@ -1070,6 +1374,73 @@
 }
 #rlog-panel:not(.rlog-light) .rlog-master-off {
     color: #a1a1aa;
+}
+
+/* 暗色搜索功能 */
+#rlog-panel:not(.rlog-light) .rlog-search-btn {
+    background: transparent;
+    color: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-search-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f4f5;
+}
+/* 暗色搜索模式激活时放大镜图标高亮（与角色名暗色蓝色一致） */
+#rlog-panel:not(.rlog-light) .rlog-record.rlog-searching .rlog-search-btn {
+    color: #6ba9d4;
+}
+#rlog-panel:not(.rlog-light) .rlog-record.rlog-searching .rlog-search-btn:hover {
+    background: rgba(107, 169, 212, 0.15);
+    color: #8bbde0;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-search-prev,
+#rlog-panel:not(.rlog-light) .rlog-search-next {
+    background: transparent;
+    color: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-search-prev:hover:not(:disabled),
+#rlog-panel:not(.rlog-light) .rlog-search-next:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f4f5;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-search-input-wrap {
+    background: rgba(255, 255, 255, 0.08);
+}
+#rlog-panel:not(.rlog-light) .rlog-search-input-wrap:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+#rlog-panel:not(.rlog-light) .rlog-search-input-wrap:focus-within {
+    background: rgba(255, 255, 255, 0.12);
+}
+#rlog-panel:not(.rlog-light) .rlog-search-input {
+    background: transparent !important;
+    border: none !important;
+    color: #f4f4f5;
+    outline: none !important;
+    box-shadow: none !important;
+}
+#rlog-panel:not(.rlog-light) .rlog-search-input::placeholder {
+    color: #71717a;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-search-count {
+    color: #a1a1aa;
+}
+
+#rlog-panel:not(.rlog-light) .rlog-search-prev:disabled,
+#rlog-panel:not(.rlog-light) .rlog-search-next:disabled {
+    color: #52525b;
+}
+
+#rlog-panel:not(.rlog-light) mark.rlog-search-mark {
+    background: #FFFF00;
+    color: #000000;
+}
+#rlog-panel:not(.rlog-light) mark.rlog-search-mark-current {
+    background: #FF9632;
+    color: #000000;
 }
 
 /* 暗色关闭状态遮罩 */
