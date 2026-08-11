@@ -36,7 +36,7 @@
         },
         {
             targetSelector: '#rlog-more-drawer',
-            desc: '点击<strong>更多选项</strong>显示：<br>• 内容预览开关<br>• 插件总开关<br>• 使用引导<br>• 清空所有记录<br>• 昼/夜模式切换',
+            desc: '点击<strong>更多选项</strong>显示：<br>• 内容预览开关<br>• 插件总开关<br>• 使用引导<br>• 临时测试按钮（后续移除）<br>• 清空所有记录<br>• 昼/夜模式切换',
             onEnter: () => {
                 const drawer = document.getElementById('rlog-more-drawer');
                 if (drawer) drawer.style.transition = 'none';
@@ -83,7 +83,7 @@
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-actions-inner',
-            desc: '<strong>展开时显示：</strong><br>• 搜索<br>• 展开/折叠内部所有消息<br>• 复制整条请求<br>• 删除本条记录'
+            desc: '<strong>展开时显示：</strong><br>• 搜索<br>• 展开/折叠内部所有消息<br>• <strong>New 查看全文</strong>（原<strong>复制整条请求</strong>移入内部）<br>• 删除本条记录'
         },
         {
             targetSelector: '.rlog-search-box',
@@ -188,8 +188,9 @@
 
         // 引导期间只展示演示记录（demo），不展示真实记录：
         // 1. 备份当前真实记录列表到 savedRecords
-        // 2. 清空列表（setRecords([])）
-        // 3. 注入 demo（unshift 至最前，所有 data-record-index="0" 步骤均作用于 demo）
+        // 2. 标记引导进行中（此后新到达的记录只暂存、不显示，由 index.js 处理）
+        // 3. 清空列表（setRecords([])）
+        // 4. 注入 demo（unshift 至最前，所有 data-record-index="0" 步骤均作用于 demo）
         // 这样保证引导各步骤的 DOM 完全可控，避免列表有真实记录时
         // 最后一步「复制单条消息」定位到不可控的真实记录导致选框错位。
         // endTour 中会移除 demo 并恢复 savedRecords。
@@ -199,6 +200,9 @@
                 savedRecords = api.records() || [];
             } else {
                 savedRecords = [];
+            }
+            if (typeof api.setTourActive === 'function') {
+                api.setTourActive(true);
             }
             if (typeof api.setRecords === 'function') {
                 api.setRecords([]);
@@ -239,22 +243,43 @@
         tooltip = null;
         highlightBox = null;
 
-        // 恢复引导前的记录列表：
-        // - 若引导前有真实记录（savedRecords 非空）→ 直接恢复备份（demo 已被清空替换）
-        // - 若引导前无记录（savedRecords 为空数组）→ 无需处理（setRecords([]) 已是结果）
+        // 恢复引导前的记录列表 + 引导期间暂存的新记录：
+        // - 引导期间新到达的记录被 index.js 暂存（不显示），这里先取出，
+        //   再与引导前备份合并恢复（新记录在前、旧记录在后，符合「最新在上」的展示顺序）
+        // - 若引导前无记录（savedRecords 为空数组）→ 只恢复引导期间的新记录
         // 使用 requestAnimationFrame 延迟到下一帧恢复：让引导 UI 移除先完成渲染（立即反馈），
         // 再执行重量级的列表恢复渲染（极端场景 100 条记录 × 100+ 消息时，全量重建可能数百 ms）。
         // 这样用户点击「完成」后引导气泡先消失，列表在下一次渲染帧中恢复，避免同步阻塞卡死 UI。
         if (savedRecords !== null && window.__RLogApi && typeof window.__RLogApi.setRecords === 'function') {
-            const recordsToRestore = savedRecords;
+            const recordsBeforeTour = savedRecords;
             savedRecords = null;
             requestAnimationFrame(() => {
-                if (window.__RLogApi && typeof window.__RLogApi.setRecords === 'function') {
-                    window.__RLogApi.setRecords(recordsToRestore);
+                const api = window.__RLogApi;
+                if (api && typeof api.setRecords === 'function') {
+                    // 先取出引导期间暂存的新记录（延迟到恢复前一刻再取，
+                    // 避免 rAF 间隙中新到达的记录漏进旧列表后被覆盖丢失）
+                    let pendingRecords = [];
+                    if (typeof api.drainTourPendingRecords === 'function') {
+                        pendingRecords = api.drainTourPendingRecords();
+                    }
+                    // 引导期间有新记录到达时，与正常 addRecord 行为保持一致：
+                    // 新记录到达会折叠所有已有记录（仅折叠记录本身，子消息展开状态不变）。
+                    // 无新记录到达时保持引导前状态原样恢复，不扰动用户的展开状态。
+                    if (pendingRecords.length > 0) {
+                        recordsBeforeTour.forEach(r => { r.collapsed = true; });
+                    }
+                    api.setRecords(pendingRecords.concat(recordsBeforeTour));
+                }
+                // 恢复完成后再解除引导状态，此后新记录按正常逻辑直接加入列表
+                if (api && typeof api.setTourActive === 'function') {
+                    api.setTourActive(false);
                 }
             });
         } else {
             savedRecords = null;
+            if (window.__RLogApi && typeof window.__RLogApi.setTourActive === 'function') {
+                window.__RLogApi.setTourActive(false);
+            }
         }
         isDemoInjected = false;
     }

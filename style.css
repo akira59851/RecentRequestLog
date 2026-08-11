@@ -46,6 +46,7 @@
     display: flex;
     align-items: center;
     gap: 0;
+    font-family: inherit; /* 与「查看全文」标题一致：继承 #rlog-panel 字体，避免 ST 全局 h4 样式引入不同字体 */
 }
 /* 标题文字 — 单击折叠/展开窗口 */
 .rlog-title-text {
@@ -136,7 +137,7 @@
     white-space: nowrap;
 }
 .rlog-more-drawer.expanded {
-    max-width: 300px; /* 足够容纳所有按钮的预估宽度 */
+    max-width: 360px; /* 足够容纳所有按钮的预估宽度 */
     opacity: 1;
 }
 
@@ -316,6 +317,33 @@
     top: 1px;
 }
 
+/* ── Token 计数区间颜色（仅记录标题栏总数）
+   tier 0-7 由 JS getTokenTier() 根据总 token 数分配，纯 CSS class 驱动 */
+.rlog-token-num {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 明亮主题 */
+.rlog-total-tokens .rlog-token-tier-0 { color: #5B8DB8; } /* <4K */
+.rlog-total-tokens .rlog-token-tier-1 { color: #4C9DA8; } /* 4K-8K */
+.rlog-total-tokens .rlog-token-tier-2 { color: #4B9F8A; } /* 8K-16K */
+.rlog-total-tokens .rlog-token-tier-3 { color: #6E9F4A; } /* 16K-32K */
+.rlog-total-tokens .rlog-token-tier-4 { color: #A49A45; } /* 32K-64K */
+.rlog-total-tokens .rlog-token-tier-5 { color: #C47D4F; } /* 64K-128K */
+.rlog-total-tokens .rlog-token-tier-6 { color: #C05E59; } /* 128K-200K */
+
+/* >200K 深红 + 低频脉冲变亮（纯 color 动画，不动 filter） */
+.rlog-total-tokens .rlog-token-tier-7 {
+    color: #a94040;
+    animation: rlog-token-pulse-light 4s ease-in-out infinite;
+}
+
+@keyframes rlog-token-pulse-light {
+    0%, 88%   { color: #a94040; } /* 静止 */
+    95%       { color: #db4646; } /* 变亮 */
+    100%      { color: #a94040; } /* 恢复 */
+}
+
 .rlog-source-badge {
     font-size: 12px;
     white-space: nowrap;
@@ -389,7 +417,7 @@
     flex-shrink: 0;
 }
 
-.rlog-copy-all-btn,
+.rlog-read-full-btn,
 .rlog-msg-collapse-btn,
 .rlog-msg-expand-btn,
 .rlog-delete-record-btn {
@@ -407,7 +435,7 @@
     align-items: center;
     justify-content: center;
 }
-.rlog-copy-all-btn:hover,
+.rlog-read-full-btn:hover,
 .rlog-msg-collapse-btn:hover,
 .rlog-msg-expand-btn:hover { background: rgba(0, 0, 0, 0.05); color: #111827; }
 
@@ -430,7 +458,7 @@
 .rlog-record.expanded .rlog-toggle-icon { transform: rotate(0deg); }
 
 /* 折叠时瞬间隐藏操作按钮（保留箭头），搜索按钮与同排其他按钮行为一致 */
-.rlog-record.collapsed .rlog-copy-all-btn,
+.rlog-record.collapsed .rlog-read-full-btn,
 .rlog-record.collapsed .rlog-msg-collapse-btn,
 .rlog-record.collapsed .rlog-msg-expand-btn,
 .rlog-record.collapsed .rlog-delete-record-btn,
@@ -473,7 +501,7 @@
    放大镜按钮 (.rlog-search-btn) 因此保持在原位不动。 */
 .rlog-record.rlog-searching .rlog-msg-expand-btn,
 .rlog-record.rlog-searching .rlog-msg-collapse-btn,
-.rlog-record.rlog-searching .rlog-copy-all-btn,
+.rlog-record.rlog-searching .rlog-read-full-btn,
 .rlog-record.rlog-searching .rlog-delete-record-btn {
     visibility: hidden;
     pointer-events: none;
@@ -711,7 +739,11 @@ mark.rlog-search-mark-current {
 /* 消息头部 */
 .rmsg-header {
     position: sticky;
-    top: 40px; /* 刚好卡在父级标题（高度 40px）下方 */
+    /* 吸顶偏移 = 记录标题栏实际高度（--rlog-rec-h，由 JS 在渲染/显示/尺寸变化时实测写入）。
+       记录标题栏会因宽度变化换行变高（窄屏 3~4 行），写死 40px/36px 会导致消息标题
+       被记录标题遮挡、看起来"没吸住"；用变量跟随真实高度后，消息标题始终贴在
+       记录标题栏正下方，滚动仍由浏览器原生 sticky 完成。 */
+    top: var(--rlog-rec-h, 40px);
     z-index: 10;
     background: #f9fafb;
     display: flex;
@@ -1011,7 +1043,7 @@ mark.rlog-search-mark-current {
         margin-right: 4px;
         height: 9px;
     }
-    .rlog-copy-all-btn,
+    .rlog-read-full-btn,
     .rlog-msg-collapse-btn,
     .rlog-msg-expand-btn,
     .rlog-delete-record-btn,
@@ -1066,7 +1098,7 @@ mark.rlog-search-mark-current {
         padding: 0 10px;
     }
     .rmsg-header {
-        top: 36px; /* 移动端父级标题高度约为 36px */
+        top: var(--rlog-rec-h, 36px); /* 动态：等于记录标题栏实际高度（JS 布局变化时更新） */
         gap: 6px;
         margin: 0 -10px;
         padding: 4px 10px;
@@ -1269,6 +1301,27 @@ mark.rlog-search-mark-current {
 #rlog-panel:not(.rlog-light) .rlog-total-tokens {
     color: #a1a1aa;
 }
+
+/* 暗色主题 */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-0 { color: #6A9BC4; } /* <4K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-1 { color: #5BA9B4; } /* 4K-8K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-2 { color: #58AA91; } /* 8K-16K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-3 { color: #7EAE55; } /* 16K-32K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-4 { color: #B0A74D; } /* 32K-64K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-5 { color: #D08755; } /* 64K-128K */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-6 { color: #ba4e49; } /* 128K-200K */
+
+/* >200K 深红 + 低频脉冲变亮（纯 color 动画，不动 filter） */
+#rlog-panel:not(.rlog-light) .rlog-total-tokens .rlog-token-tier-7 {
+    color: #b64048;
+    animation: rlog-token-pulse-dark 4s ease-in-out infinite;
+}
+
+@keyframes rlog-token-pulse-dark {
+    0%, 88%   { color: #b64048; } /* 静止 */
+    95%       { color: #d34444; } /* 变亮 */
+    100%      { color: #b64048; } /* 恢复 */
+}
 #rlog-panel:not(.rlog-light) .rlog-source-native {
     color: #a1a1aa; /* emerald-400 -> muted gray */
 }
@@ -1289,14 +1342,14 @@ mark.rlog-search-mark-current {
 }
 #rlog-panel:not(.rlog-light) .rlog-toggle-icon { color: #a1a1aa; }
 
-#rlog-panel:not(.rlog-light) .rlog-copy-all-btn,
+#rlog-panel:not(.rlog-light) .rlog-read-full-btn,
 #rlog-panel:not(.rlog-light) .rlog-msg-collapse-btn,
 #rlog-panel:not(.rlog-light) .rlog-msg-expand-btn,
 #rlog-panel:not(.rlog-light) .rlog-delete-record-btn {
     background: transparent;
     color: #a1a1aa;
 }
-#rlog-panel:not(.rlog-light) .rlog-copy-all-btn:hover,
+#rlog-panel:not(.rlog-light) .rlog-read-full-btn:hover,
 #rlog-panel:not(.rlog-light) .rlog-msg-collapse-btn:hover,
 #rlog-panel:not(.rlog-light) .rlog-msg-expand-btn:hover {
     background: rgba(255, 255, 255, 0.08);
@@ -1997,7 +2050,9 @@ mark.rlog-search-mark-current {
     right: 0;
     bottom: 0;
     width: 30px;          /* 【可调】触控区宽度，保证手指易于点中 */
-    z-index: 11;          /* 高于 .rmsg-header(z-index:10)，防止拖到顶部时圆点被标题栏遮挡 */
+    /* 低于消息标题栏（.rmsg-header z-index:10）：子记录滚出屏幕后内容（含滚动条）
+       会从吸顶标题栏下方穿过，滚动条应被标题栏盖住；圆点与进度条一致，不单独浮在上面 */
+    z-index: 5;
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
@@ -2081,5 +2136,280 @@ mark.rlog-search-mark-current {
 @media (max-width: 768px) {
     .rlog-scroll-hitbox {
         width: 30px;       /* 移动端保持 30px 宽度 */
+    }
+}
+
+/* ============================================================
+   「查看全文」覆盖层 (明亮主题默认)
+   覆盖整个 #rlog-panel（含主标题栏），独立的 sticky 标题栏 + 可滚动内容区
+   ============================================================ */
+
+/* ── 覆盖层容器 ─────────────────────────────── */
+.rlog-read-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* ── 标题栏（sticky，不随内容滚动） ───────────── */
+/* 标题栏：垂直 padding 压缩为 5px，整体高度比主标题栏更紧凑 */
+.rlog-read-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between; /* 标题在左，操作区整体靠右 */
+    gap: 8px;
+    padding: 5px 12px;
+    background: #f3f4f6;
+    border-bottom: 1px solid #e5e7eb;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+/* 标题字号小于主标题（主标题 15px → 查看全文 13px），字体与主标题一致（继承面板字体） */
+.rlog-read-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #111827;
+    line-height: 1;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+/* ── 右侧操作区：格式切换滑块 + 复制 + 关闭 统一靠右排列 ── */
+.rlog-read-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px; /* 复制/关闭按钮间隙拉近，整体更紧凑 */
+    flex-shrink: 0;
+}
+
+/* ── 格式切换滑块（分段控制，参考内容预览开关） ── */
+/* 滑块与缩小后的按钮（20px）协调 */
+.rlog-read-format-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    background: #e5e7eb;
+    border-radius: 4px;
+    padding: 2px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+    height: 18px; /* 适配「查看全文」标题栏较矮高度（主标题栏为 24px） */
+    box-sizing: border-box;
+    font-size: 9px;
+    font-weight: 600;
+    white-space: nowrap; /* 防止选项文字折行 */
+}
+
+/* 两个选项等分宽度，文字始终在各自选项内居中；
+   white-space: nowrap 防止「JSON」等文字被挤压换行 */
+.rlog-read-seg-option {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    min-width: 0;
+    padding: 0 4px;       /* 更紧凑，适配较矮标题栏 */
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    white-space: nowrap;
+    color: #6b7280;
+    transition: color 0.2s ease;
+}
+.rlog-read-seg-slider {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    background: #ffffff;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 整理格式：滑块在左，整理文字高亮 */
+.rlog-read-format-toggle.formatted .rlog-read-seg-formatted { color: #111827; }
+.rlog-read-format-toggle.formatted .rlog-read-seg-raw { color: #9ca3af; }
+/* 原始格式：滑块移到右侧，原始JSON文字高亮 */
+.rlog-read-format-toggle.raw .rlog-read-seg-raw { color: #111827; }
+.rlog-read-format-toggle.raw .rlog-read-seg-formatted { color: #9ca3af; }
+.rlog-read-format-toggle.raw .rlog-read-seg-slider {
+    transform: translateX(100%);
+}
+
+/* ── 复制 / 关闭按钮 ───────────────────────────
+   比主标题栏按钮（28px）更小：20×20，适配较矮的「查看全文」标题栏 */
+.rlog-read-copy-btn,
+.rlog-read-close-btn {
+    padding: 0;
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #6b7280;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+/* 滑块与复制按钮形态不同（圆角分段控件 vs 方形图标按钮），单独加大二者间距；不影响复制↔关闭 */
+.rlog-read-copy-btn {
+    margin-left: 6px;
+}
+.rlog-read-copy-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: #111827;
+}
+.rlog-read-close-btn {
+    font-size: 14px;
+}
+.rlog-read-close-btn:hover {
+    color: #ef4444;
+    background: #fee2e2;
+}
+
+/* ── 内容区（可滚动，复用 .rmsg-content 的文字样式） ── */
+.rlog-read-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px 16px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #374151;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Segoe UI', system-ui, -apple-system, Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.rlog-read-content::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+/* 复用 Overlay 滚动条样式：内容区的触控区（30px） */
+.rlog-read-content {
+    position: relative;
+}
+
+/* ── 底部防截断长条 ──────────────────────────────
+   与主面板底部一致：不画实线，保留细边框由外层 #rlog-panel 的 border 提供；
+   此条为 6px 透明留白（对应主面板 .rlog-panel-body 的 padding-bottom: 6px），
+   避免文本滚动到底部时被边框生硬截断 */
+.rlog-read-footer {
+    flex-shrink: 0;
+    height: 6px;
+    background: transparent;
+}
+
+/* ============================================================
+   「查看全文」覆盖层 — 暗色主题
+   ============================================================ */
+#rlog-panel:not(.rlog-light) .rlog-read-overlay {
+    background: #18181b;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-header {
+    background: #27272a;
+    border-bottom-color: #3f3f46;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-title {
+    color: #f4f4f5;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-format-toggle {
+    background: #3f3f46;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-seg-option {
+    color: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-format-toggle.formatted .rlog-read-seg-formatted { color: #f4f4f5; }
+#rlog-panel:not(.rlog-light) .rlog-read-format-toggle.formatted .rlog-read-seg-raw { color: #52525b; }
+#rlog-panel:not(.rlog-light) .rlog-read-format-toggle.raw .rlog-read-seg-raw { color: #f4f4f5; }
+#rlog-panel:not(.rlog-light) .rlog-read-format-toggle.raw .rlog-read-seg-formatted { color: #52525b; }
+#rlog-panel:not(.rlog-light) .rlog-read-seg-slider {
+    background: #52525b;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+#rlog-panel:not(.rlog-light) .rlog-read-copy-btn {
+    color: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-copy-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f4f5;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-close-btn {
+    color: #a1a1aa;
+}
+#rlog-panel:not(.rlog-light) .rlog-read-close-btn:hover {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.15);
+}
+#rlog-panel:not(.rlog-light) .rlog-read-content {
+    color: #e4e4e7;
+}
+/* 暗色主题下底部留白条透明（跟随覆盖层背景 #18181b） */
+#rlog-panel:not(.rlog-light) .rlog-read-footer {
+    background: transparent;
+}
+
+/* ============================================================
+   「查看全文」覆盖层 — 移动端响应式
+   ============================================================ */
+@media (max-width: 768px) {
+    .rlog-read-content {
+        font-size: 11px;
+        padding: 10px 12px;
+    }
+    .rlog-read-header {
+        padding: 4px 10px;
+        gap: 4px;
+    }
+    /* 移动端标题字号小于主标题（主标题 13px → 查看全文 12px） */
+    .rlog-read-title {
+        font-size: 12px;
+    }
+    /* 移动端标题栏更矮，滑块进一步压缩 */
+    .rlog-read-format-toggle {
+        height: 16px;
+        font-size: 8px;
+    }
+    .rlog-read-seg-option {
+        padding: 0 3px;
+    }
+    /* 移动端按钮再小一号：18×18 */
+    .rlog-read-copy-btn,
+    .rlog-read-close-btn {
+        width: 18px;
+        height: 18px;
+        font-size: 10px;
+    }
+    .rlog-read-close-btn {
+        font-size: 12px;
+    }
+    /* 移动端滑块与复制间距同步缩小但保持视觉区分 */
+    .rlog-read-copy-btn {
+        margin-left: 5px;
+    }
+    .rlog-read-header-actions {
+        gap: 3px;
     }
 }

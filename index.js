@@ -95,6 +95,12 @@ let event_types = null;
 /** @type {Array} 抓取到的记录列表 */
 let records = [];
 
+/** @type {boolean} 使用引导是否进行中（进行中新记录只暂存不显示，避免打断引导 DOM 定位） */
+let tourActive = false;
+
+/** @type {Array} 引导期间暂存的新记录（引导结束后由 endTour 合并恢复，保证不丢失） */
+let tourPendingRecords = [];
+
 /** @type {HTMLElement|null} 面板 DOM 元素 */
 let panelEl = null;
 
@@ -114,6 +120,9 @@ let isLightTheme = false;
 
 /** @type {boolean} 面板窗口是否折叠 */
 let isPanelCollapsed = false;
+
+/** @type {boolean} 面板隐藏/折叠期间是否有新记录到达，恢复显示时需要回到列表顶部 */
+let pendingScrollToTop = false;
 
 /** @type {boolean} 插件总开关是否启用（持久化到 localStorage，首次安装默认开启） */
 let masterEnabled = true;
@@ -644,8 +653,22 @@ window.__RLogApi = {
     // 替换整个记录列表（供 tour.js 在引导期间清空/恢复记录使用）
     setRecords: (newRecords) => {
         records = Array.isArray(newRecords) ? newRecords : [];
+        // 保持「记录数不超过上限」的既有约束（引导恢复时暂存记录可能使总数超限）
+        if (records.length > MAX_RECORDS) {
+            records.length = MAX_RECORDS;
+        }
         panelContentDirty = true;
         if (panelEl && isPanelVisible) renderPanelContent();
+    },
+    // 引导状态控制（供 tour.js 使用）：引导期间新记录暂存、不显示
+    setTourActive: (active) => {
+        tourActive = !!active;
+    },
+    // 取出并清空引导期间暂存的新记录（供 tour.js 在引导结束时合并恢复）
+    drainTourPendingRecords: () => {
+        const pending = tourPendingRecords;
+        tourPendingRecords = [];
+        return pending;
     },
     expandDemo: () => {
         if (records.length > 0) {
@@ -667,6 +690,50 @@ window.__RLogApi = {
         forcePreviewState = state ? true : null;
         panelContentDirty = true;
         if (panelEl && isPanelVisible) renderPanelContent();
+    },
+    /**
+     * 注入 8 条测试记录，覆盖所有 token 区间（tier 0-7）
+     * 用于快速验证各区间颜色效果，无需真实凑齐不同大小的请求。
+     * 移动端：点击面板标题栏「更多」抽屉中的烧瓶图标按钮即可注入；
+     * 桌面端：也可在浏览器控制台执行 window.__RLogApi.injectTokenTierTest()
+     */
+    injectTokenTierTest: () => {
+        // 每个区间的典型 token 数（对应 getTokenTier 的边界）
+        const tierValues = [
+            { tokens: 2000,  label: '<4K' },
+            { tokens: 6000,  label: '4K-8K' },
+            { tokens: 12000, label: '8K-16K' },
+            { tokens: 24000, label: '16K-32K' },
+            { tokens: 48000, label: '32K-64K' },
+            { tokens: 96000, label: '64K-128K' },
+            { tokens: 160000, label: '128K-200K' },
+            { tokens: 240000, label: '>200K' },
+        ];
+        const baseTs = new Date();
+        const testRecords = tierValues.map((t, i) => {
+            const ts = new Date(baseTs.getTime() - i * 60000);
+            const tsStr = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}:${String(ts.getSeconds()).padStart(2, '0')}`;
+            return {
+                characterName: '示例角色',
+                timestamp: tsStr,
+                source: { type: 'plugin', label: '插件', detail: '插件/非原生请求' },
+                modelName: 'Test-Model',
+                messages: [{
+                    role: 'system',
+                    content: `区间测试 ${t.label}`,
+                    tokens: t.tokens,
+                    collapsed: true,
+                    tokenPrecise: true,
+                }],
+                collapsed: true,
+                isDemo: true, // 标记为演示记录，可被 removeDemo 清理
+            };
+        });
+        // 替换现有演示记录，避免叠加
+        records = records.filter(r => !r.isDemo);
+        records.unshift(...testRecords);
+        panelContentDirty = true;
+        if (panelEl && isPanelVisible) renderPanelContent();
     }
 };
 
@@ -686,7 +753,7 @@ function computeMessagesFingerprint(messages) {
     }).join('|');
 }
 
-function addRecord(characterName, messages, source, modelName) {
+function addRecord(characterName, messages, source, modelName, rawBody) {
     if (!masterEnabled) return;
     if (!characterName || !messages || messages.length === 0) return;
 
@@ -708,8 +775,19 @@ function addRecord(characterName, messages, source, modelName) {
         source: source || { type: 'plugin', label: '插件', detail: '插件/非原生请求' },
         modelName: modelName || '未知模型',
         messages,
+        rawBody: rawBody || null,   // 原始请求体 JSON 对象（「查看全文」原始格式用）
         collapsed: true,
     };
+
+    // 引导期间：新记录只暂存、不加入列表渲染（避免打断引导步骤的 DOM 定位），
+    // 引导结束后由 endTour 合并恢复，保证不丢失。同样受最大记录数上限约束。
+    if (tourActive) {
+        tourPendingRecords.unshift(record);
+        if (tourPendingRecords.length > MAX_RECORDS) {
+            tourPendingRecords.pop();
+        }
+        return;
+    }
 
     // 新记录到达时，折叠所有已有记录（仅折叠记录本身，保持各记录内部消息的折叠/展开状态不变）
     records.forEach(r => { r.collapsed = true; });
@@ -722,9 +800,17 @@ function addRecord(characterName, messages, source, modelName) {
     panelContentDirty = true;
     if (panelEl && isPanelVisible) {
         renderPanelContent();
-        // 回到顶部最新一条
-        const listEl = panelEl.querySelector('#rlog-list');
-        if (listEl) listEl.scrollTop = 0;
+        // 面板完全展开可见时：新记录到达立即回顶到最新一条
+        // （此分支在 pendingScrollToTop 改造时曾被误删，导致「只折叠不回顶」，已恢复）
+        if (!isPanelCollapsed) {
+            const listEl = panelEl.querySelector('#rlog-list');
+            if (listEl) listEl.scrollTop = 0;
+        }
+    }
+    // 面板未处于「完全展开可见」状态时（窗口折叠/完全关闭），
+    // 恢复显示后再回顶（见 togglePanelWindow / showPanel 中的 pendingScrollToTop 处理）
+    if (!(panelEl && isPanelVisible && !isPanelCollapsed)) {
+        pendingScrollToTop = true;
     }
 }
 
@@ -934,7 +1020,7 @@ async function processCapturedBody(body, requestUrl) {
     // 异步使用 ST 原生分词器精确计算每条消息的 token 数量
     // 传入 modelName 用于与 ST 主 API 模型对比，判断分词器是否兼容
     await computeTokensForMessages(messages, modelName);
-    addRecord(characterName, messages, source, modelName);
+    addRecord(characterName, messages, source, modelName, body); // 传入原始 body 供「查看全文」原始格式使用
 }
 
 /**
@@ -2172,12 +2258,28 @@ function openSearchForRecord(recordIndex) {
 
 function getFullPromptText(record) {
     return record.messages
-        .map((m) => `[${m.role}]: ${m.content}`)
+        .map((m) => `[${m.role}]\n${m.content}`)
         .join('\n\n');
 }
 
 function getTotalTokens(messages) {
     return messages.reduce((sum, m) => sum + m.tokens, 0);
+}
+
+/**
+ * 根据 token 总数返回区间等级（0-7）
+ * @param {number} tokens token 总数
+ * @returns {number} 0-7 的区间等级
+ */
+function getTokenTier(tokens) {
+    if (tokens >= 200000) return 7;
+    if (tokens >= 128000) return 6;
+    if (tokens >= 64000) return 5;
+    if (tokens >= 32000) return 4;
+    if (tokens >= 16000) return 3;
+    if (tokens >= 8000) return 2;
+    if (tokens >= 4000) return 1;
+    return 0;
 }
 
 function getRoleClass(role) {
@@ -2293,7 +2395,7 @@ function renderPanelContent() {
                             <span class="rlog-source-badge ${sourceClass}" title="${escapeHtml(sourceTitle)}"><span class="rlog-status-dot"></span>${escapeHtml(sourceLabel)}</span>
                             <span class="rlog-time">${escapeHtml(rec.timestamp)}</span>
                             <span class="rlog-model-badge" title="请求模型">${escapeHtml(rec.modelName || '未知模型')}</span>
-                            <span class="rlog-total-tokens">${recordTokenPrefix}${totalTokens} tokens / ${rec.messages.length} 条消息</span>
+                            <span class="rlog-total-tokens">${recordTokenPrefix}<span class="rlog-token-num rlog-token-tier-${getTokenTier(totalTokens)}">${totalTokens}</span>&nbsp;tokens / ${rec.messages.length} 条消息</span>
                         </div>
                         <div class="rlog-record-actions">
                             <div class="rlog-record-actions-inner" style="display:flex; gap:4px; align-items:center;">
@@ -2306,8 +2408,8 @@ function renderPanelContent() {
                                 <button class="rlog-msg-collapse-btn" data-record="${idx}" title="折叠所有消息">
                                     <i class="fa-solid fa-compress-alt"></i>
                                 </button>
-                                <button class="rlog-copy-all-btn" data-record="${idx}" title="复制整条记录">
-                                    <i class="fa-solid fa-copy"></i>
+                                <button class="rlog-read-full-btn" data-record="${idx}" title="查看全文">
+                                    <i class="fa-solid fa-file-lines"></i>
                                 </button>
                                 <button class="rlog-delete-record-btn" data-record="${idx}" title="删除本条记录">
                                     <i class="fa-solid fa-trash-can"></i>
@@ -2326,11 +2428,49 @@ function renderPanelContent() {
 
     bindListEvents(listEl);
 
+    // 为每条记录写入 --rlog-rec-h（记录标题栏实测高度），供消息标题栏吸顶定位
+    syncRecordHeaderVars(listEl);
+
     // 为消息内容区创建 overlay 进度条
     attachScrollIndicators(listEl);
 
     // 渲染完成，清除脏标记（下次打开面板时无需重建 DOM）
     panelContentDirty = false;
+}
+
+/**
+ * 同步每条记录的 --rlog-rec-h：记录标题栏（.rlog-record-header）的实际高度。
+ *
+ * 消息标题栏（.rmsg-header）的 sticky top 需要等于记录标题栏的高度，才能正好吸在
+ * 记录标题栏正下方。记录标题栏高度会随宽度变化（窄屏时信息换行，实测可达 100px+），
+ * 写死 40px/36px 会让消息标题被记录标题遮挡。这里按每条记录实测写入 CSS 变量，
+ * 浏览器原生 sticky 用该变量定位；变量只在布局变化时更新，不参与逐帧滚动。
+ */
+function syncRecordHeaderVars(listEl) {
+    if (!listEl) return;
+    ensureSharedResizeObserver();
+    // 清理已不在列表中的旧观察目标（renderPanelContent 用 innerHTML 重建 DOM）
+    const currentHeaders = new Set(listEl.querySelectorAll('.rlog-record-header'));
+    observedRecordHeaders.forEach((headerEl) => {
+        if (!currentHeaders.has(headerEl)) {
+            sharedResizeObserver.unobserve(headerEl);
+            observedRecordHeaders.delete(headerEl);
+        }
+    });
+    listEl.querySelectorAll('.rlog-record').forEach((recordEl) => {
+        const headerEl = recordEl.querySelector('.rlog-record-header');
+        if (headerEl) {
+            // 用 getBoundingClientRect().height（小数）而非 offsetHeight（取整）：
+            // 换行高度常为小数（如 65.59px），取整会让消息标题与记录标题之间
+            // 出现亚像素缝隙（高分屏上肉眼可见 ~1px）
+            recordEl.style.setProperty('--rlog-rec-h', `${headerEl.getBoundingClientRect().height.toFixed(2)}px`);
+            // 标题栏高度变化（换行/字体/视口变化）时自动刷新偏移
+            if (!observedRecordHeaders.has(headerEl)) {
+                observedRecordHeaders.add(headerEl);
+                sharedResizeObserver.observe(headerEl);
+            }
+        }
+    });
 }
 
 /**
@@ -2401,11 +2541,11 @@ function bindListEvents(listEl) {
         });
     });
 
-    listEl.querySelectorAll('.rlog-copy-all-btn').forEach((btn) => {
+    listEl.querySelectorAll('.rlog-read-full-btn').forEach((btn) => {
         btn.addEventListener('click', function (e) {
             e.stopPropagation();
             const idx = Number(this.dataset.record);
-            copyFullRecord(idx, this);
+            openReadFullOverlay(idx);
         });
     });
 
@@ -2515,6 +2655,15 @@ function togglePanelWindow() {
         delete panelEl.dataset.rlogSavedWidth;
         delete panelEl.dataset.rlogSavedHeight;
         panelEl.classList.remove('rlog-window-collapsed');
+        // 窗口重新展开后重测记录标题栏高度（隐藏期间 offsetHeight 为 0，吸顶偏移需刷新）
+        syncRecordHeaderVars(panelEl.querySelector('#rlog-list'));
+        // 折叠期间有新记录到达时，恢复展开后回到列表顶部最新一条
+        // （DOM 在隐藏状态下重建，浏览器重新显示时会恢复旧滚动位置，必须显式回顶）
+        if (pendingScrollToTop) {
+            pendingScrollToTop = false;
+            const listEl = panelEl.querySelector('#rlog-list');
+            if (listEl) listEl.scrollTop = 0;
+        }
     }
 }
 
@@ -2656,6 +2805,177 @@ function showCopyFeedback(btnEl, success) {
     }, 1500);
 }
 
+
+// ── 查看全文覆盖层 ────────────────────────────────
+
+/** @type {HTMLElement|null} 当前「查看全文」覆盖层 DOM 元素 */
+let readFullOverlayEl = null;
+
+/** @type {number|null} 当前打开覆盖层对应的记录索引 */
+let readFullRecordIndex = null;
+
+/** @type {string} 当前显示格式：'formatted'（整理）或 'raw'（原始 JSON） */
+let readFullFormat = 'formatted';
+
+/**
+ * 获取覆盖层内容区的文本内容
+ * @param {object} record 记录对象
+ * @param {string} format 格式：'formatted' 或 'raw'
+ * @returns {string} 文本内容
+ */
+function getReadContent(record, format) {
+    if (format === 'raw') {
+        if (!record.rawBody) {
+            return '{"error": "原始请求体数据不可用"}';
+        }
+        try {
+            return JSON.stringify(record.rawBody, null, 2);
+        } catch (e) {
+            return '{"error": "原始请求体数据不可用"}';
+        }
+    }
+    return getFullPromptText(record);
+}
+
+/**
+ * 切换覆盖层显示格式并刷新内容区
+ * @param {string} format 'formatted' 或 'raw'
+ */
+function switchReadFormat(format) {
+    if (!readFullOverlayEl) return;
+    readFullFormat = format;
+    const record = records[readFullRecordIndex];
+    if (!record) return;
+
+    const contentEl = readFullOverlayEl.querySelector('.rlog-read-content');
+    if (contentEl) {
+        contentEl.textContent = getReadContent(record, format);
+        contentEl.scrollTop = 0; // 切换格式时回到顶部
+    }
+
+    // 更新 toggle 状态
+    const toggleEl = readFullOverlayEl.querySelector('.rlog-read-format-toggle');
+    if (toggleEl) {
+        if (format === 'raw') {
+            toggleEl.classList.add('raw');
+            toggleEl.classList.remove('formatted');
+        } else {
+            toggleEl.classList.remove('raw');
+            toggleEl.classList.add('formatted');
+        }
+    }
+}
+
+/**
+ * 关闭「查看全文」覆盖层并从 DOM 中移除
+ */
+function closeReadFullOverlay() {
+    if (readFullOverlayEl) {
+        // 清理覆盖层内容区的自定义滚动条，避免残留
+        const readContentEl = readFullOverlayEl.querySelector('.rlog-read-content');
+        if (readContentEl) {
+            detachScrollbarForContent(readContentEl);
+        }
+        readFullOverlayEl.remove();
+        readFullOverlayEl = null;
+    }
+    readFullRecordIndex = null;
+    // 解绑 Escape 键监听
+    document.removeEventListener('keydown', handleReadFullEscape);
+}
+
+/**
+ * Escape 键关闭覆盖层的处理器
+ * @param {KeyboardEvent} e 键盘事件
+ */
+function handleReadFullEscape(e) {
+    if (e.key === 'Escape' && readFullOverlayEl) {
+        closeReadFullOverlay();
+    }
+}
+
+/**
+ * 打开「查看全文」覆盖层，展示指定记录的完整提示词
+ * 覆盖层挂载到 #rlog-panel 内部，完整遮挡面板（含主标题栏）。
+ * @param {number} index 记录索引
+ */
+function openReadFullOverlay(index) {
+    // 先退出搜索模式（覆盖层打开期间搜索不可见不可操作）
+    resetSearchIfActive();
+
+    const record = records[index];
+    if (!record || !panelEl) return;
+
+    // 懒创建：关闭旧的覆盖层（如有）
+    closeReadFullOverlay();
+
+    readFullRecordIndex = index;
+    readFullFormat = 'formatted';
+
+    // 创建覆盖层
+    const overlay = document.createElement('div');
+    overlay.className = 'rlog-read-overlay';
+
+    overlay.innerHTML = `
+        <div class="rlog-read-header">
+            <span class="rlog-read-title">查看全文</span>
+            <div class="rlog-read-header-actions">
+                <div class="rlog-read-format-toggle formatted" title="切换显示格式">
+                    <span class="rlog-read-seg-slider"></span>
+                    <span class="rlog-read-seg-option rlog-read-seg-formatted">整理</span>
+                    <span class="rlog-read-seg-option rlog-read-seg-raw">JSON</span>
+                </div>
+                <button class="rlog-read-copy-btn" title="复制当前内容">
+                    <i class="fa-solid fa-copy"></i>
+                </button>
+                <button class="rlog-read-close-btn" title="关闭 (Esc)">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        </div>
+        <div class="rlog-read-content"></div>
+        <div class="rlog-read-footer"></div>
+    `;
+
+    // 内容使用 textContent 设置纯文本，避免 innerHTML 解析开销
+    const contentEl = overlay.querySelector('.rlog-read-content');
+    contentEl.textContent = getReadContent(record, 'formatted');
+
+    // 绑定标题栏事件
+    const toggleEl = overlay.querySelector('.rlog-read-format-toggle');
+    toggleEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // 切换格式：当前 formatted → raw；raw → formatted
+        switchReadFormat(readFullFormat === 'formatted' ? 'raw' : 'formatted');
+    });
+
+    const copyBtn = overlay.querySelector('.rlog-read-copy-btn');
+    copyBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const text = getReadContent(record, readFullFormat);
+        await doCopy(text, copyBtn);
+    });
+
+    const closeBtn = overlay.querySelector('.rlog-read-close-btn');
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeReadFullOverlay();
+    });
+
+    // 挂载到面板内部，覆盖整个面板
+    panelEl.appendChild(overlay);
+    readFullOverlayEl = overlay;
+
+    // 为覆盖层内容区创建自定义滚动条（复用 Overlay 进度条样式与交互）
+    const readContentElForScroll = overlay.querySelector('.rlog-read-content');
+    if (readContentElForScroll) {
+        queueScrollbarsForEls([readContentElForScroll]);
+    }
+
+    // 绑定 Escape 键关闭
+    document.addEventListener('keydown', handleReadFullEscape);
+}
+
 function escapeHtml(str) {
     if (!str) return '';
     const div = document.createElement('div');
@@ -2681,6 +3001,9 @@ const pendingScrollbarContentEls = new Set();
 /** @type {ResizeObserver|null} 共享 ResizeObserver：所有进度条共用一个，替代每元素一个 */
 let sharedResizeObserver = null;
 
+/** @type {Set<HTMLElement>} 已监听高度变化的记录标题栏（--rlog-rec-h 吸顶偏移随高度自动刷新） */
+const observedRecordHeaders = new Set();
+
 /** @type {IntersectionObserver|null} 懒创建进度条的 IntersectionObserver */
 let scrollbarLazyObserver = null;
 
@@ -2699,7 +3022,17 @@ let thumbPendingElement = null;
  */
 function ensureSharedResizeObserver() {
     if (sharedResizeObserver) return;
-    sharedResizeObserver = new ResizeObserver(() => {
+    sharedResizeObserver = new ResizeObserver((entries) => {
+        // 记录标题栏高度变化（换行/字体/视口变化）→ 实时刷新吸顶偏移
+        for (const entry of entries) {
+            const headerEl = entry.target;
+            if (headerEl && headerEl.classList && headerEl.classList.contains('rlog-record-header')) {
+                const recordEl = headerEl.closest('.rlog-record');
+                if (recordEl) {
+                    recordEl.style.setProperty('--rlog-rec-h', `${headerEl.getBoundingClientRect().height.toFixed(2)}px`);
+                }
+            }
+        }
         // 任一内容区尺寸变化：全量更新所有进度条的 thumb
         // 回调本身由浏览器在布局后批量触发，这里再合并到同一 RAF 帧
         requestThumbUpdate();
@@ -2809,8 +3142,11 @@ function updateScrollbarThumb(contentEl, cleanup) {
  */
 function queueScrollbarsForEls(contentEls) {
     ensureScrollbarLazyObserver();
+    // 支持 .rmsg-content（消息内容区）与 .rlog-read-content（查看全文覆盖层内容区）
+    const SCROLLABLE_CONTENT_CLASSES = ['rmsg-content', 'rlog-read-content'];
     contentEls.forEach((contentEl) => {
-        if (!contentEl || !contentEl.classList || !contentEl.classList.contains('rmsg-content')) return;
+        if (!contentEl || !contentEl.classList) return;
+        if (!SCROLLABLE_CONTENT_CLASSES.some(c => contentEl.classList.contains(c))) return;
         if (pendingScrollbarContentEls.has(contentEl)) return;
         if (scrollbarCleanups.has(contentEl)) return;
         pendingScrollbarContentEls.add(contentEl);
@@ -2830,12 +3166,19 @@ function createScrollbarForContent(contentEl) {
     // 注意：这里读取 scrollHeight 布局值不可避免，但仅在进入视口时才执行（懒创建 + 单个元素）
     if (contentEl.scrollHeight <= contentEl.clientHeight) return;
 
-    // 挂载目标：.rmsg-item（contentEl 的父容器），而不是 contentEl 内部
+    // 挂载目标二选一（在 contentEl 的父容器上，而不是 contentEl 内部）：
+    // - .rmsg-content → 挂载到 .rmsg-item（旧路径，行为完全不变）
+    // - .rlog-read-content → 挂载到 .rlog-read-overlay（新路径）
     // 这样 hitbox 使用 position: absolute 定位时不会随 contentEl 滚动而移出视口
     const container = contentEl.parentElement;
-    if (!container || !container.classList.contains('rmsg-item')) return;
+    if (!container) return;
+
+    const isRmsgItem = container.classList.contains('rmsg-item');
+    const isReadOverlay = container.classList.contains('rlog-read-overlay');
+    if (!isRmsgItem && !isReadOverlay) return;
 
     // 确保容器有 position: relative 作为定位参考
+    // 对 .rmsg-item 保持旧行为；对 .rlog-read-overlay 为兜底（其本身是 absolute）
     const currentPosition = getComputedStyle(container).position;
     if (currentPosition === 'static') {
         container.style.position = 'relative';
@@ -3099,6 +3442,9 @@ function buildUI() {
                     <button id="rlog-help-btn" class="rlog-header-btn" title="查看使用引导">
                         <i class="fa-solid fa-question"></i>
                     </button>
+                    <button id="rlog-test-btn" class="rlog-header-btn" title="注入测试数据（验证 Token 区间颜色）">
+                        <i class="fa-solid fa-vial"></i>
+                    </button>
                     <button id="rlog-clear-btn" class="rlog-header-btn" title="清空所有记录">
                         <i class="fa-solid fa-trash-can"></i>
                     </button>
@@ -3229,6 +3575,18 @@ function buildUI() {
         }
     });
 
+    panelEl.querySelector('#rlog-test-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (window.__RLogApi && typeof window.__RLogApi.injectTokenTierTest === 'function') {
+            window.__RLogApi.injectTokenTierTest();
+            // 注入后收起「更多」抽屉，展示测试记录
+            const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
+            const moreBtn = panelEl.querySelector('#rlog-more-btn');
+            moreDrawer.classList.remove('expanded');
+            moreBtn.classList.remove('active-drawer-btn');
+        }
+    });
+
     panelEl.querySelector('#rlog-theme-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         isLightTheme = !isLightTheme;
@@ -3302,6 +3660,15 @@ function buildUI() {
     makeDraggable(panelEl);
     makeResizable(panelEl);
 
+    // 视口/面板宽度变化（含桌面↔移动切换、拖拽改宽）会让记录标题栏换行高度变化，
+    // 重测吸顶偏移（--rlog-rec-h）
+    if (!window.rlogHeaderVarResizeInstalled) {
+        window.rlogHeaderVarResizeInstalled = true;
+        window.addEventListener('resize', () => {
+            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+        });
+    }
+
     // 安装来源识别监听（仅记录用户原生入口，不受总开关影响）
     installSourceTracking();
 
@@ -3332,6 +3699,15 @@ function showPanel() {
     if (panelContentDirty) {
         renderPanelContent();
     }
+    // 面板显示后重测记录标题栏高度：隐藏状态下渲染时 offsetHeight 为 0，
+    // 消息标题栏的吸顶偏移（--rlog-rec-h）必须以可见状态的实际高度为准
+    syncRecordHeaderVars(panelEl.querySelector('#rlog-list'));
+    // 面板关闭期间有新记录到达时，重新打开后回到列表顶部最新一条
+    if (pendingScrollToTop && !isPanelCollapsed) {
+        pendingScrollToTop = false;
+        const listEl = panelEl.querySelector('#rlog-list');
+        if (listEl) listEl.scrollTop = 0;
+    }
 
     // 在面板显示后检查是否需要进行引导
     if (window.__RLogTour && typeof window.__RLogTour.check === 'function') {
@@ -3342,6 +3718,8 @@ function showPanel() {
 function hidePanel() {
     // 关闭面板时退出搜索模式
     resetSearchIfActive();
+    // 关闭面板时隐式清理「查看全文」覆盖层（如存在）
+    closeReadFullOverlay();
     if (panelEl) {
         panelEl.style.display = 'none';
         // 关闭面板时清理残留的主题切换动画类，防止下次打开时重播
@@ -3366,6 +3744,13 @@ function makeResizable(el) {
         resizeStartY = e.clientY;
         resizeStartW = el.offsetWidth;
         resizeStartH = el.offsetHeight;
+        // 锚定左/上边缘：面板默认是水平居中定位（left:50% + translateX(-50%)），
+        // 若只改 width，左右两侧会对称移动；与标题栏拖拽一样改为 left/top 定位后，
+        // 缩放只影响右/下边缘（右下角小三角的常规行为）。
+        const rect = el.getBoundingClientRect();
+        el.style.transform = 'none';
+        el.style.left = `${rect.left}px`;
+        el.style.top = `${rect.top}px`;
         el.style.transition = 'none';
     });
 
@@ -3377,6 +3762,11 @@ function makeResizable(el) {
         resizeStartY = e.touches[0].clientY;
         resizeStartW = el.offsetWidth;
         resizeStartH = el.offsetHeight;
+        // 与 mousedown 相同：锚定左/上边缘，缩放只影响右/下边缘
+        const rect = el.getBoundingClientRect();
+        el.style.transform = 'none';
+        el.style.left = `${rect.left}px`;
+        el.style.top = `${rect.top}px`;
         el.style.transition = 'none';
     });
 }
@@ -3397,6 +3787,8 @@ function makeResizable(el) {
         if (panelResizing) {
             panelResizing = false;
             if (panelEl) panelEl.style.transition = '';
+            // 面板宽度变化可能改变记录标题栏换行高度，重测吸顶偏移
+            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 
@@ -3416,6 +3808,7 @@ function makeResizable(el) {
         if (panelResizing) {
             panelResizing = false;
             if (panelEl) panelEl.style.transition = '';
+            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 })();
@@ -3484,6 +3877,8 @@ function makeDraggable(el) {
         if (dragging) {
             dragging = false;
             el.style.transition = '';
+            // 拖拽不改变宽度，但保留重测以覆盖偶发换行变化
+            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 
@@ -3491,6 +3886,7 @@ function makeDraggable(el) {
         if (dragging) {
             dragging = false;
             el.style.transition = '';
+            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 }
