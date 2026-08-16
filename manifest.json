@@ -4,6 +4,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "akira",
-    "version": "1.9.0",
+    "version": "1.10.0",
     "description": "自动抓取每次发送给 AI 的完整提示词，方便随时回溯查看。"
 }
