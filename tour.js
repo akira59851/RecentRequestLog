@@ -5,7 +5,7 @@
 /* 【区块索引】（按文件从上到下的顺序）
    1. 可调参数          引导交互的数值常量（延时、边距等），调参只改这里
    2. 状态变量          引导运行期间的内存状态（当前步、UI 元素引用、记录备份等）
-   3. 引导步骤配置      11 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
+   3. 引导步骤配置      12 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
    4. 步骤行为辅助函数  步骤配置引用的具名动作（开/关抽屉、预览、搜索），与步骤一一对应
    5. 版本检查与启动    获取 manifest 版本号，与本地「已看版本」比对后决定是否展示引导
    6. 引导生命周期      开始 / 结束 / 切换步骤，含引导期间真实记录的备份与恢复
@@ -40,6 +40,8 @@
     let isActive = false;
     /* 引导开始前备份的真实记录列表（引导期间清空列表，结束后恢复） */
     let savedRecords = null;
+    /* 引导开始前备份的筛选状态（引导期间重置为全开，结束后恢复） */
+    let savedFilterState = null;
     /* 查找目标元素的失败重试计数（避免 DOM 尚未就绪时被跳过） */
     let findTargetRetryCount = 0;
 
@@ -75,6 +77,12 @@
             desc: '点击<strong>更多选项</strong>显示：<br>• 内容预览开关<br>• 插件总开关<br>• 使用引导<br>• 临时测试按钮（后续移除）<br>• 清空所有记录<br>• 昼/夜模式切换',
             onEnter: enterDrawerStep,
             onLeave: leaveDrawerStep
+        },
+        {
+            targetSelector: '#rlog-filter-drawer',
+            desc: '<strong>New </strong>点击<strong>筛选</strong>按钮显示：<br>• 原生/插件：按来源隐藏整条记录<br>• Gemini/Claude/DeepSeek/其他：按模型隐藏整条记录<br>• 系统/AI/用户/其他：按角色隐藏记录内的子消息<br>点击切换隐藏/显示，筛选条件可叠加',
+            onEnter: enterFilterDrawerStep,
+            onLeave: leaveFilterDrawerStep
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rmsg-item .rmsg-preview-text',
@@ -132,6 +140,29 @@
 
     function leaveDrawerStep() {
         setDrawerState(false);
+    }
+
+    /* 筛选抽屉步骤：进入时打开「筛选」抽屉、离开时关闭。
+       与抽屉步骤同理：临时禁用 transition，避免高亮框位置跳动。 */
+    function setFilterDrawerState(open) {
+        const drawer = document.getElementById('rlog-filter-drawer');
+        if (drawer) drawer.style.transition = 'none';
+        const api = window.__RLogApi;
+        if (api && typeof api.setFilterDrawer === 'function') {
+            api.setFilterDrawer(open);
+        }
+        if (drawer) {
+            void drawer.offsetWidth;
+            drawer.style.transition = '';
+        }
+    }
+
+    function enterFilterDrawerStep() {
+        setFilterDrawerState(true);
+    }
+
+    function leaveFilterDrawerStep() {
+        setFilterDrawerState(false);
     }
 
     /* 内容预览步骤：进入时展开 demo 记录/消息并开启内容预览，离开时关闭预览 */
@@ -229,6 +260,16 @@
             if (titleText) titleText.click();
         }
 
+        /* 收起两个抽屉，避免残留展开状态影响步骤定位 */
+        if (window.__RLogApi) {
+            if (typeof window.__RLogApi.closeDrawer === 'function') {
+                window.__RLogApi.closeDrawer();
+            }
+            if (typeof window.__RLogApi.setFilterDrawer === 'function') {
+                window.__RLogApi.setFilterDrawer(false);
+            }
+        }
+
         isActive = true;
         currentStep = 0;
 
@@ -242,6 +283,13 @@
            endTour 中会移除 demo 并恢复 savedRecords。 */
         if (window.__RLogApi) {
             const api = window.__RLogApi;
+            /* 备份筛选状态并重置为全开：demo 记录必须可见，引导步骤定位才可靠 */
+            if (typeof api.getFilterState === 'function') {
+                savedFilterState = api.getFilterState();
+            }
+            if (typeof api.resetFilters === 'function') {
+                api.resetFilters();
+            }
             if (typeof api.records === 'function') {
                 savedRecords = api.records() || [];
             } else {
@@ -314,6 +362,11 @@
                         recordsBeforeTour.forEach(r => { r.collapsed = true; });
                     }
                     api.setRecords(pendingRecords.concat(recordsBeforeTour));
+                    /* 恢复引导前的筛选状态 */
+                    if (savedFilterState !== null && typeof api.setFilterState === 'function') {
+                        api.setFilterState(savedFilterState);
+                        savedFilterState = null;
+                    }
                 }
                 /* 恢复完成后再解除引导状态，此后新记录按正常逻辑直接加入列表 */
                 if (api && typeof api.setTourActive === 'function') {
@@ -322,6 +375,7 @@
             });
         } else {
             savedRecords = null;
+            savedFilterState = null;
             if (window.__RLogApi && typeof window.__RLogApi.setTourActive === 'function') {
                 window.__RLogApi.setTourActive(false);
             }

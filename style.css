@@ -5,7 +5,7 @@
 /* 【区块索引】（按文件从上到下的顺序）
    1. 主题颜色变量总表    所有颜色的唯一来源（明亮/暗色各一处），调色只改这里
    2. 框架：面板容器      面板本体（位置/尺寸/底色/字体/投影）
-   3. 面板头部            标题、计数、操作按钮、「更多」抽屉
+   3. 面板头部            标题、计数、操作按钮、「更多」「筛选」抽屉
    4. 面板主体            列表容器、关闭遮罩、右下角缩放角标
    5. 单条记录            记录标题栏、来源 dot、token 区间配色、操作按钮、回复状态标记
    6. 搜索功能            放大镜、输入框、计数、命中高亮
@@ -121,6 +121,15 @@
     --rlog-search-text: #1f2937;        /* 搜索输入文字 */
     --rlog-search-ph: #9ca3af;          /* 输入框占位提示文字 */
     --rlog-search-disabled: #c1c5cc;    /* 上下箭头禁用态 */
+    /* 筛选 */
+    --rlog-filter-gemini: #4285F4;      /* Gemini 家族激活色 */
+    --rlog-filter-claude: #D97757;      /* Claude 家族激活色 */
+    --rlog-filter-deepseek: #5786FE;    /* DeepSeek 家族激活色 */
+    --rlog-filter-chip-on-bg: var(--rlog-hover-bg); /* 分段按钮开启底色（中性灰，同 hover，去除颜色倾向） */
+    --rlog-filter-chip-on-text: #124e78; /* 分段按钮开启文字（默认色；来源/角色/模型品牌另有专属色） */
+    --rlog-filter-chip-off-bg: transparent; /* 分段按钮关闭底色（透明：区分靠边框与文字，激活态才填充底色） */
+    --rlog-filter-chip-off-text: #9ca3af; /* 分段按钮关闭文字 */
+    --rlog-filter-chip-border: #d1d5db;   /* 分段按钮边框 */
     --rlog-mark-bg: #FFFF00;            /* 搜索普通命中高亮背景（亮暗相同） */
     --rlog-mark-bg-current: #FF9632;    /* 搜索当前命中高亮背景（亮暗相同） */
     --rlog-mark-color: inherit;         /* 高亮内文字色（暗色改为黑色） */
@@ -228,6 +237,14 @@
     --rlog-search-text: #f4f4f5;
     --rlog-search-ph: #71717a;
     --rlog-search-disabled: #52525b;
+    --rlog-filter-gemini: #7AB3FF;
+    --rlog-filter-claude: #E89B7C;
+    --rlog-filter-deepseek: #7C9BFF;
+    --rlog-filter-chip-on-bg: var(--rlog-hover-bg); /* 分段按钮开启底色（中性灰，同 hover，去除颜色倾向） */
+    --rlog-filter-chip-on-text: #a6d4f6; /* 分段按钮开启文字（默认色；来源/角色/模型品牌另有专属色） */
+    --rlog-filter-chip-off-bg: transparent; /* 分段按钮关闭底色（透明：区分靠边框与文字，激活态才填充底色） */
+    --rlog-filter-chip-off-text: #71717a; /* 分段按钮关闭文字 */
+    --rlog-filter-chip-border: #3f3f46;   /* 分段按钮边框 */
     --rlog-mark-color: #000000;
     --rlog-scroll-track: #27272a;
     --rlog-scroll-thumb: #52525b;
@@ -338,9 +355,21 @@
 }
 
 .rlog-header-actions {
+    --rlog-header-gap: 6px; /* 按钮区统一间距；抽屉折叠时靠下方负外边距抵消半个间距，保证相邻可见按钮视觉间距一致 */
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--rlog-header-gap);
+}
+
+/* 「更多」「筛选」两个抽屉都作为按钮区最前面的 flex 项（位于「更多」按钮左侧）：
+   展开时从左侧撑开按钮区，按钮区整体向标题方向延伸，「更多」按钮及右侧按钮横向位置不动；
+   移动端按钮区放不下时整体换到第二行（与原来「更多」抽屉的展开/收起动态一致）。
+   折叠时抽屉仍是零宽 flex 槽，两侧各产生一个 gap，会把相邻按钮间距撑成两倍；
+   用负外边距各抵消半个间距，让展开的抽屉与「更多」按钮之间恰好保留一个间距。 */
+.rlog-more-drawer:not(.expanded),
+.rlog-filter-drawer:not(.expanded) {
+    margin-left: calc(var(--rlog-header-gap) / -2);
+    margin-right: calc(var(--rlog-header-gap) / -2);
 }
 
 .rlog-header-btn {
@@ -360,7 +389,8 @@
     transition: color 0.15s, background 0.15s;
 }
 .rlog-header-btn:hover,
-#rlog-more-btn.active-drawer-btn { color: var(--rlog-text-strong); background: var(--rlog-hover-bg); }
+#rlog-more-btn.active-drawer-btn,
+#rlog-filter-btn.active-drawer-btn { color: var(--rlog-text-strong); background: var(--rlog-hover-bg); }
 
 #rlog-clear-btn:hover { color: var(--rlog-danger); background: var(--rlog-danger-bg); }
 
@@ -388,6 +418,7 @@
     align-items: center;
     gap: 6px;
     overflow: hidden;
+    height: 0; /* 折叠时宽度与高度都归零：只留宽度 0 会被内部内容高度撑高（如筛选抽屉多行分段按钮） */
     max-width: 0;
     opacity: 0;
     transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
@@ -395,8 +426,182 @@
     white-space: nowrap;
 }
 .rlog-more-drawer.expanded {
+    height: auto;
     max-width: 360px; /* 足够容纳所有按钮的预估宽度 */
     opacity: 1;
+}
+
+/* ── 筛选抽屉与分段按钮 ─────────────────────── */
+.rlog-filter-drawer {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    height: 0; /* 折叠时高度归零，避免内部多行分段按钮把标题栏撑高换行 */
+    max-width: 0;
+    opacity: 0;
+    transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+    /* 与「更多」抽屉一致：行内展开，配合 overflow:hidden 防止内容挤压换行 */
+    white-space: nowrap;
+}
+.rlog-filter-drawer.expanded {
+    height: auto;
+    max-width: 440px; /* 三组分段按钮（来源/模型/角色图标）的完整宽度 */
+    opacity: 1;
+}
+/* 三组分段按钮（来源/模型/角色）：组内紧贴成一段，组间由抽屉 gap: 8px 分隔，不再画分隔线 */
+.rlog-filter-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+}
+.rlog-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 28px; /* 小正方形按钮：图标标签不再占文字宽度 */
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--rlog-filter-chip-border);
+    border-radius: 0; /* 默认无圆角：组首/组尾外角由下方规则补 2px 小圆角 */
+    background: var(--rlog-filter-chip-off-bg);
+    color: var(--rlog-filter-chip-off-text);
+    font-size: 14px; /* FA 图标字号（品牌 SVG 尺寸由下方 svg 规则控制） */
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+/* 组内相邻按钮紧贴：后一个向左叠 1px，让两条 1px 边框重叠成一条细线，避免出现 2px 分隔线 */
+.rlog-filter-group .rlog-filter-chip + .rlog-filter-chip {
+    margin-left: -1px;
+}
+/* 组首：左侧外角 2px 小圆角，右侧直角；组尾：右侧外角 2px 小圆角，左侧直角 */
+.rlog-filter-group .rlog-filter-chip:first-child {
+    border-radius: 5px 0 0 5px;
+}
+.rlog-filter-group .rlog-filter-chip:last-child {
+    border-radius: 0 5px 5px 0;
+}
+.rlog-filter-chip svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+}
+/* Claude 图标单独缩小 2px（此处可调：桌面基准 18px → 16px，直接改下面数值即可；
+   移动端在末尾媒体查询里有对应的单独覆盖） */
+.rlog-filter-chip[data-filter-group="model"][data-filter-value="claude"] svg {
+    width: 16px;
+    height: 16px;
+}
+.rlog-filter-chip.rlog-filter-chip-on {
+    border-color: transparent;
+    background: var(--rlog-filter-chip-on-bg);
+    color: var(--rlog-filter-chip-on-text);
+    font-weight: 600;
+}
+/* 激活文字色：来源沿用 dot 颜色，角色沿用 role 标签字体颜色，模型品牌保持品牌色 */
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="source"][data-filter-value="native"] { color: var(--rlog-source-native); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="source"][data-filter-value="plugin"] { color: var(--rlog-source-plugin); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="role"][data-filter-value="system"] { color: var(--rlog-role-system); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="role"][data-filter-value="user"] { color: var(--rlog-role-user); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="role"][data-filter-value="assistant"] { color: var(--rlog-role-assistant); }
+/* 「其他」激活色统一：模型分组与角色分组的「其他」按钮共用同一颜色
+   （默认激活文字色，不沿用角色 other 标签色；此处可调，改这一处即同步两边） */
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="model"][data-filter-value="other"],
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="role"][data-filter-value="other"] {
+    color: var(--rlog-filter-chip-on-text);
+}
+/* 模型品牌分段按钮激活色：图标跟随品牌色，其余按钮统一用默认强调色 */
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="model"][data-filter-value="gemini"] { color: var(--rlog-filter-gemini); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="model"][data-filter-value="claude"] { color: var(--rlog-filter-claude); }
+.rlog-filter-chip.rlog-filter-chip-on[data-filter-group="model"][data-filter-value="deepseek"] { color: var(--rlog-filter-deepseek); }
+/* Gemini 图标未激活置灰：Gemini 是多色渐变显式 fill（不走 currentColor），激活时保持彩色不动；
+   未激活时用 CSS 覆盖其所有 rect 为当前文字灰（--rlog-filter-chip-off-text），与其他单色按钮一致 */
+.rlog-filter-chip.rlog-filter-chip-off[data-filter-group="model"][data-filter-value="gemini"] svg rect {
+    fill: currentColor;
+}
+.rlog-filter-chip:hover {
+    border-color: var(--rlog-border);
+}
+
+/* 筛选按钮与激活圆点（抽屉关闭时也提示「筛选已生效」） */
+#rlog-filter-btn {
+    position: relative;
+}
+#rlog-filter-btn .rlog-filter-dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--rlog-accent);
+    display: none;
+    pointer-events: none;
+}
+#rlog-filter-btn.rlog-filter-active .rlog-filter-dot {
+    display: block;
+}
+
+/* 标题旁「N隐藏」指示器 + 重置按钮：
+   透明无边框，只保留重置按钮自身的 hover 效果；
+   三段间距（标题→计数、计数→筛选、筛选→重置图标）视觉上保持一致：
+   计数左右各 5px 内边距参与间距计算，指示器左右内边距归零、内部 gap 补足差值（桌面 6px / 移动端 4px） */
+.rlog-filter-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px; /* 「N隐藏」→「重置图标」的间距 */
+    margin-left: 4px;   /* 与计数一致（桌面端；移动端在媒体查询里单独覆盖） */
+    padding: 2px 0 4px; /* 左右内边距归零：避免与计数右侧 5px 内边距叠加导致「计数→筛选」间距偏大；上下内边距保持与计数一致 */
+    background: transparent; /* 整体透明、无边框，只保留下方重置按钮的 hover 效果 */
+    color: var(--rlog-text-faint); /* 与计数文字色一致 */
+    font-size: 12px;    /* 桌面端比计数小 1px（原 13px，此处可调）；移动端在媒体查询里保持 10.5px 不变 */
+    font-weight: 600;   /* 与计数一致 */
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    position: relative;
+    top: 2.5px; /* 垂直微调（移动端在媒体查询里覆盖为 0） */
+}
+.rlog-filter-indicator[hidden] {
+    display: none;
+}
+#rlog-filter-reset-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--rlog-accent);
+    font-size: 10px;
+    line-height: inherit;
+    padding: 2px 2px; /* 悬停框内边距（用户定稿）：上下 2px 决定悬停框高度、也间接影响图标在框内上下位置；左右 2px 是水平留白 */
+    margin-top: 0; /* 悬停框整体上下位置微调（此处可调：正值整体下移、负值整体上移） */
+    border-radius: 2px;
+    cursor: pointer;
+}
+#rlog-filter-reset-btn:hover {
+    background: var(--rlog-hover-bg-strong);
+}
+
+/* 筛选后无结果空状态的「重置筛选」按钮（父级 .rlog-empty 为 pointer-events:none） */
+#rlog-filter-reset-empty {
+    pointer-events: auto;
+    margin-top: 8px;
+    padding: 4px 12px;
+    border: 1px solid var(--rlog-filter-chip-border);
+    border-radius: 4px;
+    background: var(--rlog-hover-bg);
+    color: var(--rlog-accent);
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+    font-family: inherit;
+}
+#rlog-filter-reset-empty:hover {
+    background: var(--rlog-hover-bg-strong);
 }
 
 /* ── 面板主体（包裹列表和 resize 角标） ────────── */
@@ -413,6 +618,17 @@
 /* 窗口折叠状态：隐藏整个 body，只保留标题栏 */
 .rlog-window-collapsed .rlog-panel-body {
     display: none;
+}
+
+/* 窗口折叠状态：只保留标题文字、计数与关闭按钮，其余头部元素视觉隐藏并禁用交互。
+   用 visibility 而不是 display——元素仍占位，标题栏宽度与各按钮相对位置完全不变；
+   pointer-events: none 阻断点击/触摸，避免误触（键盘聚焦也会因 visibility 隐藏而失效）。
+   保留的例外：标题文字（点击展开）、计数（双击改上限）、关闭按钮（关面板）；
+   拖拽区不参与屏蔽——折叠态仍可按住标题栏空白处拖动面板（用户要求保留折叠态拖拽）。 */
+.rlog-window-collapsed .rlog-filter-indicator,
+.rlog-window-collapsed .rlog-header-actions > :not(#rlog-close-btn) {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 /* ── 插件关闭状态遮罩（不阻挡交互） ────────── */
@@ -1700,7 +1916,9 @@ mark.rlog-search-mark-current {
 
 .rlog-tour-dots {
     display: flex;
+    flex-wrap: wrap; /* 步骤多时圆点在自身区域内换行，不挤占右侧按钮 */
     gap: 4px;
+    min-width: 0; /* 允许圆点区收缩，把空间优先让给按钮 */
 }
 
 .rlog-tour-dot {
@@ -1723,6 +1941,7 @@ mark.rlog-search-mark-current {
 .rlog-tour-buttons {
     display: flex;
     gap: 8px;
+    flex-shrink: 0; /* 按钮区固定宽度，不被圆点挤压缩小，文字不换行 */
 }
 
 .rlog-tour-btn {
@@ -2055,10 +2274,9 @@ mark.rlog-search-mark-current {
         top: 0px; /* 垂直微调（移动端，桌面 1px） */
     }
     .rlog-header-actions {
-        gap: 3px;
-        /* 移动端换行时右对齐：当 header flex-wrap: wrap 生效，第二行元素会被挤下来，
-           通过 margin-left: auto 可以将其向右推。由于 h4 占据了足够的空间，换行后动作栏
-           独占一行，margin-left: auto 即可实现右对齐。 */
+        --rlog-header-gap: 3px; /* 移动端按钮间距（抽屉与「更多」按钮的间距随之一致）；gap 继承基础规则 */
+        /* 移动端换行时右对齐：当 header flex-wrap: wrap 生效，抽屉展开使按钮区变宽放不下时，
+           按钮区整体换到第二行，margin-left: auto 将其向右推（与原来「更多」抽屉行为一致） */
         margin-left: auto;
     }
     .rlog-header-btn {
@@ -2181,15 +2399,55 @@ mark.rlog-search-mark-current {
         transition: none !important;
     }
 
-    /* 「更多」抽屉禁用过渡动画（仅移动端）：
-       抽屉展开时 max-width 0→300px 的 0.3s 过渡会持续改变面板头部 flex 布局，
+    /* 「更多」「筛选」抽屉禁用过渡动画（仅移动端）：
+       抽屉展开时 max-width 0→360/440px 的 0.3s 过渡会持续改变面板头部 flex 布局，
        移动端 header 可换行时导致面板 body 高度连续变化，
        数百个 sticky 消息标题（.rmsg-header）被迫逐帧重排，造成明显卡顿。
        禁用过渡后展开/收起一次性完成，仅触发一次 reflow，响应更流畅。
        桌面端保留原有横向滑出动画，不受影响。
        保持原有显示方式（行内展开），仅禁用过渡。 */
-    .rlog-more-drawer {
+    .rlog-more-drawer,
+    .rlog-filter-drawer {
         transition: none;
+    }
+    /* 筛选抽屉移动端宽度不足时允许换行（不缩小字号），整行占用头部第二行 */
+    .rlog-filter-drawer {
+        flex-wrap: wrap;
+        white-space: normal;
+    }
+    .rlog-filter-drawer.expanded {
+        max-width: 100%;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    .rlog-filter-chip {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        font-size: 12px;
+    }
+    .rlog-filter-chip svg {
+        width: 16px;
+        height: 16px;
+    }
+    /* Claude 图标移动端单独缩小（此处可调：移动端基准 16px → 14px，改下面数值即可） */
+    .rlog-filter-chip[data-filter-group="model"][data-filter-value="claude"] svg {
+        width: 14px;
+        height: 14px;
+    }
+    /* 标题旁筛选指示器（移动端）：字号/按钮大小保持不变，只保留差异项；
+       间距规则与桌面同理（计数左右 4px 内边距参与计算，指示器左右内边距归零、
+       gap 2px 紧凑间距与桌面一致），其余继承桌面端基础规则 */
+    .rlog-filter-indicator {
+        margin-left: 3px;   /* 与计数一致（移动端，桌面 4px） */
+        gap: 2px;           /* 「N隐藏」→「重置图标」的间距（与桌面一致，紧凑） */
+        padding: 2px 0 2px; /* 左右内边距归零；上下内边距与计数一致（移动端） */
+        font-size: 10.5px;  /* 移动端字号保持 10.5px 不变（桌面 11px） */
+        top: 0px; /* 与计数一致（移动端不抬高） */
+    }
+    /* 重置图标（移动端）：基础规则里按钮字号 10px 是桌面定稿值，移动端保持 10.5px 不变 */
+    #rlog-filter-reset-btn {
+        font-size: 10.5px;
     }
 
 /* ── 弹窗移动端适配 ──────────────────────────────── */

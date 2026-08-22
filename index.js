@@ -9,22 +9,23 @@
    4. 工具函数           无副作用的纯函数（转义/模型名/token/角色映射等）
    5. AI 请求体结构验证  判断请求体是否为 AI 生成请求
    6. 请求来源识别       原生入口监听与来源推断（原生/插件）
-   7. Fetch 请求拦截     网络层捕获请求体（parse/process/install）
+   7. Fetch 请求拦截     网络层捕获请求体（parse/process/install，含同源 iframe 扩展）
    8. 回复追踪与解析     回复捕获/SSE 解析/错误提取/终态挂载
    9. 数据管理           记录增删、去重指纹、条数上限
    10. 持久化设置        总开关/内容预览/主题/最大记录数读写
    11. 通用弹窗          最大记录数设置 + 通用确认弹窗
    12. 搜索              搜索状态/匹配/高亮/导航
-   13. 渲染与 HTML 构建  记录/消息 HTML、renderPanelContent、事件绑定
-   14. 折叠展开与回顶闪烁 折叠/展开、滚动锚定、置底回顶、闪烁提示
-   15. 记录删除与复制    单条删除、整条/单消息复制、复制反馈
-   16. 查看全文覆盖层    覆盖层开合、格式切换、滚动、Esc 关闭
-   17. 自定义滚动条      共享观察器、滚动条创建/更新/拖拽、滚动指示器
-   18. 面板控制          菜单入口、buildUI、开合/折叠/主题按钮
-   19. 拖拽与缩放        面板拖动/右下角缩放
-   20. 初始化            等待 ST 就绪并构建 UI
-   21. 对外 API          window.__RLogApi 面向 tour.js 的接口
-   22. 临时测试功能      烧瓶按钮与模拟注入（后续删除）
+   13. 筛选              筛选状态/匹配/抽屉与分段按钮/指示器
+   14. 渲染与 HTML 构建  记录/消息 HTML、renderPanelContent、事件绑定
+   15. 折叠展开与回顶闪烁 折叠/展开、滚动锚定、置底回顶、闪烁提示
+   16. 记录删除与复制    单条删除、整条/单消息复制、复制反馈
+   17. 查看全文覆盖层    覆盖层开合、格式切换、滚动、Esc 关闭
+   18. 自定义滚动条      共享观察器、滚动条创建/更新/拖拽、滚动指示器
+   19. 面板控制          菜单入口、buildUI、开合/折叠/主题按钮
+   20. 拖拽与缩放        面板拖动/右下角缩放
+   21. 初始化            等待 ST 就绪并构建 UI
+   22. 对外 API          window.__RLogApi 面向 tour.js 的接口
+   23. 临时测试功能      烧瓶按钮与模拟注入（后续删除）
    ============================================================ */
 
 /* ── 动态加载 tour.js ─────────────────── */
@@ -181,8 +182,18 @@ let originalFetch = null;
 /* Function|null: 当前安装的 fetch 包装函数 */
 let currentHook = null;
 
-/* boolean: fetch hook 执行中的重入保护标志 */
-let fetchHookInFlight = false;
+/* 注：fetch 重入保护改为每个 realm（主窗口/iframe）独立，见 createFetchHook。 */
+
+/* WeakMap<Window, Function>: 已安装 fetch 包装的窗口 → 包装函数（主窗口 + 同源 iframe）
+   用途：① 防止同一窗口重复包装破坏原有 fetch 包装链；
+        ② 包装被 iframe 内部脚本替换后据此刻断是否需要重新包装。 */
+const hookedFetchHooks = new WeakMap();
+
+/* WeakSet<HTMLIFrameElement>: 已挂「重载后重装包装」监听的 iframe 元素（防重复挂监听） */
+const iframeLoadListenersAttached = new WeakSet();
+
+/* boolean: iframe fetch 包装（初始扫描 + MutationObserver 动态监听）是否已安装 */
+let iframeHooksInstalled = false;
 
 /* number: 递增的请求捕获编号，用于把回复精确挂回对应记录 */
 let captureSeq = 0;
@@ -234,6 +245,17 @@ let searchState = null;
 
 /* number|null: 搜索输入 debounce 定时器 ID */
 let searchDebounceTimer = null;
+
+/* 筛选状态（会话级内存态：页面存活期内关面板/折叠窗口保留，刷新即重置）
+   结构: { source: {native, plugin}, role: {system, user, assistant, other},
+           model: {gemini, claude, deepseek, other} }
+   默认全开 = 不筛选；任一项为 false 表示「隐藏该分类」。
+   来源/模型控制整条记录的显隐；角色控制记录内部子消息（含回复伪消息）的显隐。 */
+let filterState = {
+    source: { native: true, plugin: true },
+    role: { system: true, user: true, assistant: true, other: true },
+    model: { gemini: true, claude: true, deepseek: true, other: true },
+};
 
 /* HTMLElement|null: 置底跳转后待闪烁的标题栏（平滑滚动到位后触发） */
 let pendingFlashHeader = null;
@@ -702,6 +724,15 @@ function installSourceTracking() {
         getRecentClicks: () => recentClicks.slice(),
         getLastNativeIntent: () => lastNativeIntent,
         getRecords: () => records,
+        getIframeHookCount: () => {
+            let count = 0;
+            document.querySelectorAll('iframe').forEach((f) => {
+                try {
+                    if (f.contentWindow && hookedFetchHooks.get(f.contentWindow)) count++;
+                } catch (e) { /* 跨域 iframe 跳过 */ }
+            });
+            return count;
+        },
         dumpClicks: () => {
             console.table(recentClicks.map(c => ({ time: new Date(c.ts).toISOString().slice(11, 23), ...c })));
             return recentClicks;
@@ -914,30 +945,51 @@ async function processCapturedBody(body, requestUrl, captureId) {
     addRecord(characterName, messages, source, modelName, body, captureId); /* 传入原始 body 供「查看全文」原始格式使用 */
 }
 
-function installFetchHook() {
-    if (currentHook) return; /* 已安装 */
+/* 判断 fetch 输入是否为 Request 对象。
+   用鸭子类型而非 instanceof：跨 realm 时 iframe 内的 Request 在主窗口的
+   `instanceof Request` 恒为 false，但 clone/text 方法仍然可用。 */
+function isRequestLike(input) {
+    return !!(input && typeof input === 'object' && typeof input.clone === 'function' && typeof input.text === 'function');
+}
 
-    originalFetch = window.fetch;
-    currentHook = async function hookedFetch(input, init) {
+/* 构造一个 fetch 拦截包装：主窗口与同源 iframe 共用同一套捕获逻辑。
+   每个 realm（窗口）用独立的重入保护标记；包装内部始终调用该 realm 自己的原始 fetch，
+   避免把 iframe realm 的 Request 对象传给主窗口 fetch（跨 realm 会抛错）。
+
+   快速通道（early return），避免对每一个 JSON POST 请求都做完整解析：
+   1. 非 POST/PUT/PATCH 请求直接跳过
+   2. URL path 明确属于 ST 内部 API (/api/, /assets/, /backgrounds/) 且不匹配 AI 路径，直接跳过
+   3. 仅对通过快速筛选的请求才解析 body
+
+   锁策略：realmHookInFlight 仅保护 body 的同步捕获（init.body 读取），
+   持有时长极短（微秒级）；originalFetch 在锁释放后立即调用，
+   分词计算和 addRecord 通过 Promise 链异步执行，不阻塞实际网络请求的发出。
+
+   @param {Window} realmWindow 被包装的窗口（主窗口或 iframe.contentWindow）
+   @param {Function} getOriginalFetch () => Function 返回该 realm 当前原始 fetch
+   @returns {Function} 包装后的 fetch */
+function createFetchHook(realmWindow, getOriginalFetch) {
+    let realmHookInFlight = false; /* 该 realm 的重入保护（防其他包装形成闭环） */
+    return async function hookedFetch(input, init) {
+        const originalFetch = getOriginalFetch();
+
         /* ── 快速通道 0：重入保护 ── */
-        /* 如果其他插件的 fetch hijack 形成闭环导致本 hook 被重复进入， */
-        /* 直接透传到 originalFetch，不参与无限循环。 */
-        if (fetchHookInFlight) {
-            return originalFetch.apply(window, [input, init]);
+        if (realmHookInFlight) {
+            return originalFetch.apply(realmWindow, [input, init]);
         }
 
         /* ── 快速通道 1：总开关关闭时直接透传，不解析 body ── */
         if (!masterEnabled) {
-            return originalFetch.apply(window, [input, init]);
+            return originalFetch.apply(realmWindow, [input, init]);
         }
 
         /* ── 快速通道 2：非 POST/PUT/PATCH 请求直接跳过 ── */
         let method = init && init.method ? init.method.toUpperCase() : 'GET';
-        if (input instanceof Request && method === 'GET') {
+        if (isRequestLike(input) && method === 'GET') {
             try { method = input.method.toUpperCase(); } catch (e) { /* ignore */ }
         }
         if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
-            return originalFetch.apply(window, [input, init]);
+            return originalFetch.apply(realmWindow, [input, init]);
         }
 
         /* ── 快速通道 3：URL 完全不可能是 AI 生成端点，直接跳过（避免解析 body） ── */
@@ -945,14 +997,14 @@ function installFetchHook() {
         const path = getUrlPathForMatch(requestUrl);
         if (path && !pathMatchesAny(path, AI_GENERATION_PATH_PATTERNS)
             && (path.startsWith('/api/') || path.startsWith('/assets/') || path.startsWith('/backgrounds/'))) {
-            return originalFetch.apply(window, [input, init]);
+            return originalFetch.apply(realmWindow, [input, init]);
         }
 
         /* ── 加锁仅保护 body 同步捕获，持有时长极短 ── */
         /* 锁内只做 init.body 的同步读取（JSON.parse 或对象引用），不涉及任何 I/O 或 await。 */
         /* 如果 init.body 不可用，则需要从 Request 中异步读取 body —— */
         /* 此时启动异步读取后立即退出锁，originalFetch 在锁外尽快调用。 */
-        fetchHookInFlight = true;
+        realmHookInFlight = true;
         /* object|null: 从 init.body 同步捕获到的请求体（无需异步读取时使用） */
         let syncBody = null;
         /* Promise<object|null>|null: 从 Request.clone() 异步读取 body 的 Promise */
@@ -967,7 +1019,7 @@ function installFetchHook() {
                 }
             }
 
-            if (!syncBody && input instanceof Request) {
+            if (!syncBody && isRequestLike(input)) {
                 try {
                     const clonedReq = input.clone();
                     /* 启动异步 body 读取，Promise 在锁外 resolve */
@@ -982,13 +1034,13 @@ function installFetchHook() {
                 }
             }
         } finally {
-            fetchHookInFlight = false;
+            realmHookInFlight = false;
             /* 锁释放 — originalFetch 可以安全调用了 */
         }
 
         /* ── 调用原始 fetch（锁外，尽早发出网络请求） ── */
         /* 通过闭包保存的引用调用，避免通过 window.fetch 访问导致递归 */
-        const fetchPromise = originalFetch.apply(window, [input, init]);
+        const fetchPromise = originalFetch.apply(realmWindow, [input, init]);
 
         /* ── 后台异步处理 body（不阻塞 fetch 返回） ── */
         if (syncBody || asyncBodyPromise) {
@@ -1011,9 +1063,94 @@ function installFetchHook() {
 
         return fetchPromise;
     };
+}
+
+function installFetchHook() {
+    if (currentHook) return; /* 已安装 */
+
+    /* 主窗口：由于本插件 loading_order 为 999，安装时其他插件的 fetch 包装链已就绪，
+       originalFetch 捕获的是完整的下游调用链。 */
+    originalFetch = window.fetch;
+    currentHook = createFetchHook(window, () => originalFetch);
     window.fetch = currentHook;
+    hookedFetchHooks.set(window, currentHook);
 
     console.debug(`[${PLUGIN_KEY}] fetch 拦截已启用（网络层统一拦截模式）`);
+}
+
+/* 给单个 iframe 安装 fetch 包装（仅同源）。
+   跨域 iframe 无法访问 contentWindow，直接跳过（同源判定用 try/catch）；
+   已安装且未被替换的窗口跳过，避免重复包装破坏该 realm 原有的 fetch 包装链。
+   @param {HTMLIFrameElement} iframe
+   @returns {boolean} 是否已安装（含已安装无需重装的场景） */
+function hookIframeFetch(iframe) {
+    if (!iframe) return false;
+    if (!iframe.contentWindow) {
+        /* contentWindow 尚未就绪：挂 load 监听，加载完成后重试 */
+        if (!iframeLoadListenersAttached.has(iframe)) {
+            iframeLoadListenersAttached.add(iframe);
+            iframe.addEventListener('load', () => hookIframeFetch(iframe));
+        }
+        return false;
+    }
+    const win = iframe.contentWindow;
+    try {
+        /* 同源判定：跨域访问 contentWindow.document 会抛 SecurityError */
+        void win.document;
+    } catch (e) {
+        return false;
+    }
+    const existingHook = hookedFetchHooks.get(win);
+    if (existingHook && win.fetch === existingHook) return true; /* 已安装且未被替换 */
+    if (typeof win.fetch !== 'function') return false;
+
+    /* 捕获该 realm 当前的原始 fetch；iframe 重载（realm 重建）或内部脚本替换 fetch
+       后，由 load 监听重新包装。 */
+    const iframeOriginalFetch = win.fetch;
+    const hook = createFetchHook(win, () => iframeOriginalFetch);
+    win.fetch = hook;
+    hookedFetchHooks.set(win, hook);
+
+    if (!iframeLoadListenersAttached.has(iframe)) {
+        iframeLoadListenersAttached.add(iframe);
+        iframe.addEventListener('load', () => hookIframeFetch(iframe));
+    }
+    return true;
+}
+
+/* 安装 iframe fetch 包装：
+   初始扫描现有 iframe（如酒馆助手脚本 iframe），并用 MutationObserver 监听后续动态创建
+   （脚本启停、角色/预设切换重建、消息渲染等）。包装始终安装，内部由 masterEnabled 决定是否记录。 */
+function installIframeFetchHooks() {
+    if (iframeHooksInstalled) return;
+    iframeHooksInstalled = true;
+
+    /* 初始扫描：安装时页面里可能已存在同源 iframe */
+    let hookedCount = 0;
+    let totalCount = 0;
+    for (const iframe of document.querySelectorAll('iframe')) {
+        totalCount++;
+        if (hookIframeFetch(iframe)) hookedCount++;
+    }
+
+    /* 监听动态新增的 iframe（含子树内新增） */
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                if (node.tagName === 'IFRAME') {
+                    hookIframeFetch(node);
+                } else if (node.querySelectorAll) {
+                    for (const inner of node.querySelectorAll('iframe')) {
+                        hookIframeFetch(inner);
+                    }
+                }
+            }
+        }
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    console.debug(`[${PLUGIN_KEY}] iframe fetch 拦截已启用（初始 ${hookedCount}/${totalCount} 个 iframe + 动态监听）`);
 }
 
 /* ── 回复追踪与解析 ──────────────────────── */
@@ -1554,12 +1691,16 @@ function appendReplyToRecordDom(record) {
 
     const idx = Number(recordEl.dataset.recordIndex);
     const replyMsgIdx = record.messages.length;
-    /* 幂等：已追加过则跳过（避免重复触发时插两条） */
-    if (bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`)) return;
-
-    bodyEl.insertAdjacentHTML('beforeend', buildMessageHtml(record.reply, idx, replyMsgIdx));
-    const replyItemEl = bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`);
-    if (replyItemEl) bindMsgItemEvents(replyItemEl);
+    /* 回复子消息被角色筛选隐藏时不追加子消息 DOM（数据已写入 record.reply，
+       恢复显示后由下次渲染自然带出）；标题栏状态标记仍照常更新 */
+    if (isMessageVisible(record.reply)) {
+        /* 幂等：已追加过则跳过（避免重复触发时插两条） */
+        if (!bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`)) {
+            bodyEl.insertAdjacentHTML('beforeend', buildMessageHtml(record.reply, idx, replyMsgIdx));
+            const replyItemEl = bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`);
+            if (replyItemEl) bindMsgItemEvents(replyItemEl);
+        }
+    }
 
     /* 标题栏回复状态标记（仅折叠时显示，展开时 CSS 隐藏）：不存在则补上，存在则刷新内容 */
     let statusEl = recordEl.querySelector('.rlog-reply-status');
@@ -1594,22 +1735,6 @@ function updateReplyTokenInDom(record) {
         tokensEl.textContent = `${reply.tokenPrecise ? '' : '~'}${reply.tokens} tokens`;
     }
 }
-
-/* 安装 fetch 拦截钩子
-   以简单包装方式拦截 window.fetch。由于本插件 loading_order 为 999，
-   在安装时其他插件的 fetch 包装链已就绪，originalFetch 捕获的是完整的下游调用链。
-   
-   优化：添加快速通道（early return），避免对每一个 JSON POST 请求都做完整的
-   结构体解析和 isAiRequestBody 深度检查。
-   1. 非 POST/PUT/PATCH 请求直接跳过
-   2. URL path 明确属于 ST 内部 API (/api/, /assets/, /backgrounds/) 且不匹配 AI 路径，直接跳过
-   3. 仅对通过快速筛选的请求才解析 body
-   
-   锁策略（规则 5）：fetchHookInFlight 仅保护 body 的同步捕获（init.body 读取），
-   锁持有时长极短（微秒级）。originalFetch 在锁释放后立即调用，
-   分词计算和 addRecord 通过 Promise 链异步执行，不阻塞实际网络请求的发出。
-   这避免了锁内 await 重操作（尤其是 computeTokensForMessages 逐条调分词器）
-   导致 originalFetch 延迟，从而破坏其他插件（如记忆插件）的时序假设。 */
 
 /* ── 数据管理 ─────────────────────────── */
 
@@ -1674,8 +1799,16 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
         return;
     }
 
-    /* 新记录到达时，折叠所有已有记录（仅折叠记录本身，保持各记录内部消息的折叠/展开状态不变） */
-    records.forEach(r => { r.collapsed = true; });
+    /* 筛选生效时先判断新记录是否可见：
+       不可见则保持当前阅读位置（不折叠已有记录、不回顶、不闪烁），仅正常入列刷新计数 */
+    const filterActive = isFilterActive();
+    const newRecordVisible = filterActive ? matchesFilter(record) : true;
+
+    /* 新记录到达时，折叠所有已有记录（仅折叠记录本身，保持各记录内部消息的折叠/展开状态不变）。
+       新记录被筛选隐藏时不折叠，避免打断正在阅读的位置 */
+    if (!filterActive || newRecordVisible) {
+        records.forEach(r => { r.collapsed = true; });
+    }
 
     records.unshift(record);
     if (records.length > MAX_RECORDS) {
@@ -1686,19 +1819,24 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
 
     panelContentDirty = true;
     if (panelEl && isPanelVisible) {
+        const listEl = panelEl.querySelector('#rlog-list');
+        const prevScrollTop = listEl ? listEl.scrollTop : 0;
         renderPanelContent();
-        /* 面板完全展开可见时：新记录到达立即回顶到最新一条 */
-        /* （此分支在 pendingScrollToTop 改造时曾被误删，导致「只折叠不回顶」，已恢复） */
         if (!isPanelCollapsed) {
-            const listEl = panelEl.querySelector('#rlog-list');
-            if (listEl) listEl.scrollTop = 0;
-            /* 新消息自动回顶：对顶部最新一条做提示闪烁 */
-            flashTopHint();
+            if (!filterActive || newRecordVisible) {
+                /* 面板完全展开可见时：新记录到达立即回顶到最新一条 + 闪烁 */
+                if (listEl) listEl.scrollTop = 0;
+                flashTopHint();
+            } else if (listEl) {
+                /* 新记录被筛选隐藏：保持原阅读位置 */
+                listEl.scrollTop = prevScrollTop;
+            }
         }
     }
     /* 面板未处于「完全展开可见」状态时（窗口折叠/完全关闭）， */
     /* 恢复显示后再回顶（见 togglePanelWindow / showPanel 中的 pendingScrollToTop 处理） */
-    if (!(panelEl && isPanelVisible && !isPanelCollapsed)) {
+    /* 新记录被筛选隐藏时也不置位：恢复显示后保持原位置，不打扰阅读 */
+    if (!(panelEl && isPanelVisible && !isPanelCollapsed) && (!filterActive || newRecordVisible)) {
         pendingScrollToTop = true;
     }
 }
@@ -2218,10 +2356,12 @@ function findMatchesInRecord(recordIndex, keyword) {
     const matches = [];
 
     record.messages.forEach((msg, msgIdx) => {
+        /* 角色筛选隐藏的子消息不参与搜索：内容不在 DOM 中，导航高亮无法定位 */
+        if (!isMessageVisible(msg)) return;
         addContentMatches(msg.content, msgIdx, normalizedKeyword, lowerKeyword, matches);
     });
     /* 回复作为最后一条伪消息参与搜索（msgIdx = messages.length） */
-    if (record.reply) {
+    if (record.reply && isMessageVisible(record.reply)) {
         addContentMatches(record.reply.content, record.messages.length, normalizedKeyword, lowerKeyword, matches);
     }
 
@@ -2760,6 +2900,155 @@ function openSearchForRecord(recordIndex) {
     }, 50);
 }
 
+/* ── 筛选 ─────────────────────────────── */
+
+/* 模型名称 → 筛选分组：DeepSeek / Claude / Gemini（含 Gemma、Palm）固定成组，其余归「其他」。
+   与 extractModelFamily()（分词用途）分离、不复用：DeepSeek 需要独立成组。 */
+function getModelFilterGroup(modelName) {
+    if (!modelName || modelName === '未知模型') return 'other';
+    const m = modelName.toLowerCase();
+    if (m.includes('deepseek')) return 'deepseek';
+    if (m.includes('claude')) return 'claude';
+    if (m.includes('gemini') || m.includes('gemma') || m.includes('palm')) return 'gemini';
+    return 'other';
+}
+
+/* 消息角色 → 筛选分组：system / user / assistant 固定，其余（tool、developer 等）归「其他」 */
+function getRoleFilterGroup(role) {
+    if (role === 'system') return 'system';
+    if (role === 'user') return 'user';
+    if (role === 'assistant') return 'assistant';
+    return 'other';
+}
+
+/* 子消息（含回复伪消息）是否通过角色筛选：
+   角色筛选按消息逐条判定，只控制单条子消息的显隐，不直接决定整条记录。 */
+function isMessageVisible(msg) {
+    if (!msg) return false;
+    return !!filterState.role[getRoleFilterGroup(msg.role)];
+}
+
+/* 记录是否通过当前筛选：
+   来源/模型按整条记录判定；角色按子消息逐条判定——记录自身只要还有
+   至少一条可见子消息（普通消息或回复）即保留，否则随列表隐藏。 */
+function matchesFilter(record) {
+    if (!record) return false;
+    const sourceKey = record.source && record.source.type === 'native' ? 'native' : 'plugin';
+    if (!filterState.source[sourceKey]) return false;
+    const hasVisibleMessage = record.messages.some(isMessageVisible)
+        || (record.reply ? isMessageVisible(record.reply) : false);
+    if (!hasVisibleMessage) return false;
+    const modelKey = getModelFilterGroup(record.modelName);
+    if (!filterState.model[modelKey]) return false;
+    return true;
+}
+
+/* 可见记录列表（只影响渲染；records 数组保持原样，DOM 上的 data-record-index 仍是真实索引） */
+function getVisibleRecords() {
+    return records.filter(matchesFilter);
+}
+
+/* 是否已有生效的筛选（任一分组开关被关闭） */
+function isFilterActive() {
+    return Object.keys(filterState).some((group) =>
+        Object.keys(filterState[group]).some((key) => !filterState[group][key])
+    );
+}
+
+/* 新建一份「全开」默认筛选状态（供引导暂存/恢复使用） */
+function createDefaultFilterState() {
+    return {
+        source: { native: true, plugin: true },
+        role: { system: true, user: true, assistant: true, other: true },
+        model: { gemini: true, claude: true, deepseek: true, other: true },
+    };
+}
+
+/* 模型品牌图标 SVG 路径（simple-icons 单色 24×24，fill="currentColor"，内联无图片文件） */
+const FILTER_MODEL_SVG = {
+    gemini_full: `<svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
+        <defs>
+            <radialGradient id="gemini-top" cx="50%" cy="0%" r="60%">
+                <stop offset="0%" stop-color="#FF5252" />
+                <stop offset="100%" stop-color="#FF5252" stop-opacity="0" />
+            </radialGradient>
+            <radialGradient id="gemini-right" cx="100%" cy="50%" r="70%">
+                <stop offset="0%" stop-color="#4285F4" />
+                <stop offset="100%" stop-color="#4285F4" stop-opacity="0" />
+            </radialGradient>
+            <radialGradient id="gemini-bottom" cx="50%" cy="100%" r="60%">
+                <stop offset="0%" stop-color="#0F9D58" />
+                <stop offset="100%" stop-color="#0F9D58" stop-opacity="0" />
+            </radialGradient>
+            <radialGradient id="gemini-left" cx="0%" cy="50%" r="60%">
+                <stop offset="0%" stop-color="#FBBC05" />
+                <stop offset="100%" stop-color="#FBBC05" stop-opacity="0" />
+            </radialGradient>
+            <mask id="gemini-mask">
+                <path fill="#ffffff" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/>
+            </mask>
+        </defs>
+        <g mask="url(#gemini-mask)">
+            <rect width="24" height="24" fill="#4285F4" />
+            <rect width="24" height="24" fill="url(#gemini-top)" />
+            <rect width="24" height="24" fill="url(#gemini-bottom)" />
+            <rect width="24" height="24" fill="url(#gemini-left)" />
+        </g>
+    </svg>`,
+    claude: 'm4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z',
+    deepseek: 'M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45',
+};
+
+/* 更新标题旁「N隐藏」指示器（只显示被筛选隐藏的记录数）与筛选按钮激活圆点 */
+function updateFilterIndicator() {
+    if (!panelEl) return;
+    const active = isFilterActive();
+    const indicator = panelEl.querySelector('#rlog-filter-indicator');
+    if (indicator) {
+        /* 只展示因筛选被隐藏的记录数；没有隐藏（含记录为空）时隐藏指示器，只留按钮圆点提醒 */
+        const hiddenCount = records.length - getVisibleRecords().length;
+        const showText = active && hiddenCount > 0;
+        indicator.hidden = !showText;
+        if (showText) {
+            const textEl = panelEl.querySelector('#rlog-filter-indicator-text');
+            if (textEl) textEl.textContent = `${hiddenCount}隐藏`;
+        }
+    }
+    const btn = panelEl.querySelector('#rlog-filter-btn');
+    if (btn) btn.classList.toggle('rlog-filter-active', active);
+}
+
+/* 刷新抽屉内所有分段按钮的开/关视觉状态（aria-pressed 同步无障碍状态） */
+function updateFilterChipUI() {
+    if (!panelEl) return;
+    panelEl.querySelectorAll('.rlog-filter-chip').forEach((chip) => {
+        const group = chip.dataset.filterGroup;
+        const value = chip.dataset.filterValue;
+        const on = !!(filterState[group] && filterState[group][value]);
+        chip.classList.toggle('rlog-filter-chip-on', on);
+        chip.classList.toggle('rlog-filter-chip-off', !on);
+        chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+}
+
+/* 切换单个筛选开关并重建列表（重建时单条搜索自动退出，与现有渲染行为一致） */
+function toggleFilterChip(group, value) {
+    if (!filterState[group] || !(value in filterState[group])) return;
+    filterState[group][value] = !filterState[group][value];
+    updateFilterChipUI();
+    panelContentDirty = true;
+    if (panelEl && isPanelVisible) renderPanelContent();
+}
+
+/* 重置全部筛选为「全开」并刷新列表 */
+function resetFilters() {
+    filterState = createDefaultFilterState();
+    updateFilterChipUI();
+    updateFilterIndicator();
+    panelContentDirty = true;
+    if (panelEl && isPanelVisible) renderPanelContent();
+}
+
 /* ── 渲染与 HTML 构建 ──────────────────── */
 
 function getHeaderCountText() {
@@ -2813,6 +3102,8 @@ function renderPanelContent() {
 
     /* 计数格式统一由 updateHeaderTitle → getHeaderCountText 一处维护 */
     updateHeaderTitle();
+    /* 筛选指示器（「N隐藏」+ 按钮圆点）随每次渲染刷新 */
+    updateFilterIndicator();
 
     if (records.length === 0) {
         panelEl.classList.add('rlog-empty-list');
@@ -2825,6 +3116,22 @@ function renderPanelContent() {
     }
     panelEl.classList.remove('rlog-empty-list');
 
+    /* 筛选后无可显示记录：专用空状态 + 一键重置（与「暂无记录」区分） */
+    const visibleRecords = getVisibleRecords();
+    if (visibleRecords.length === 0) {
+        panelEl.classList.add('rlog-empty-list');
+        listEl.innerHTML = `<div class="rlog-empty"><div>没有符合筛选条件的记录</div><button id="rlog-filter-reset-empty" class="rlog-filter-reset-empty-btn">重置筛选</button></div>`;
+        const resetBtn = listEl.querySelector('#rlog-filter-reset-empty');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                resetFilters();
+            });
+        }
+        panelContentDirty = false;
+        return;
+    }
+
     /* 状态标签槽位宽度：实测最宽标签并写入 CSS 变量， */
     /* 等待占位与到达后的状态标签共用该宽度，回复到达不引起标题栏布局跳动 */
     const statusMaxW = getReplyStatusMaxWidth();
@@ -2832,8 +3139,12 @@ function renderPanelContent() {
         panelEl.style.setProperty('--rlog-status-w', `${statusMaxW}px`);
     }
 
-    listEl.innerHTML = records
-        .map((rec, idx) => {
+    /* 只渲染可见记录；DOM 的 data-record-index 仍写入 records 中的真实索引，
+       搜索/复制/删除/查看全文/回复挂载等按索引取数的路径无需改语义 */
+    const visibleIndexes = visibleRecords.map((rec) => records.indexOf(rec));
+    listEl.innerHTML = visibleRecords
+        .map((rec, vi) => {
+            const idx = visibleIndexes[vi];
             const totalTokens = getTotalTokens(rec.messages);
             const collapsedClass = rec.collapsed ? 'collapsed' : 'expanded';
             const sourceLabel = getSourceLabel(rec.source);
@@ -2845,11 +3156,17 @@ function renderPanelContent() {
             const allPrecise = rec.messages.every(m => m.tokenPrecise === true);
             const recordTokenPrefix = allPrecise ? '' : '~';
 
+            /* 角色筛选按子消息逐条过滤：只渲染可见子消息，
+               data-msg 仍写 messages 中的真实索引，复制/搜索/回复挂载等按索引取数无需改语义。
+               回复作为最后一条伪消息（data-msg = messages.length），与其他 role 子消息同形态 */
             const messagesHtml = rec.messages
-                .map((msg, mIdx) => buildMessageHtml(msg, idx, mIdx))
+                .map((msg, mIdx) => ({ msg, mIdx }))
+                .filter(({ msg }) => isMessageVisible(msg))
+                .map(({ msg, mIdx }) => buildMessageHtml(msg, idx, mIdx))
                 .join('')
-                /* 回复作为最后一条伪消息（data-msg = messages.length），与其他 role 子消息同形态 */
-                + (rec.reply ? buildMessageHtml(rec.reply, idx, rec.messages.length) : '');
+                + (rec.reply && isMessageVisible(rec.reply)
+                    ? buildMessageHtml(rec.reply, idx, rec.messages.length)
+                    : '');
 
             /* 回复状态标记：仅折叠时显示在按钮组与折叠箭头之间（展开时隐藏，按钮区恢复正常）。 */
             /* 回复在途（已建记录、尚未终态）时先输出透明占位，占住最宽标签的槽位， */
@@ -4073,6 +4390,37 @@ function addMenuEntry() {
     }, MENU_REORDER_DELAY_MS);
 }
 
+/* 收起「更多」抽屉（供互斥、点击外部、引导使用） */
+function closeMoreDrawer() {
+    if (!panelEl) return;
+    const drawer = panelEl.querySelector('#rlog-more-drawer');
+    const btn = panelEl.querySelector('#rlog-more-btn');
+    if (drawer) drawer.classList.remove('expanded');
+    if (btn) btn.classList.remove('active-drawer-btn');
+}
+
+/* 收起「筛选」抽屉（供互斥、点击外部、引导使用） */
+function closeFilterDrawer() {
+    if (!panelEl) return;
+    const drawer = panelEl.querySelector('#rlog-filter-drawer');
+    const btn = panelEl.querySelector('#rlog-filter-btn');
+    if (drawer) drawer.classList.remove('expanded');
+    if (btn) btn.classList.remove('active-drawer-btn');
+}
+
+/* 切换抽屉时用：旧抽屉瞬时收起（跳过收起动画）。
+   原因：两个抽屉宽度叠加会先把整行撑宽再回落（左右弹跳）；切换时让旧抽屉直接消失、
+   新抽屉照常展开，就不会出现两者同时接近满宽的重叠。
+   做法：临时禁用过渡 → 移除展开类 → 强制回流提交瞬时收起 → 恢复过渡（与 tour.js 抽屉步骤同款写法）。 */
+function closeDrawerInstant(drawer, btn) {
+    if (!drawer) return;
+    drawer.style.transition = 'none';
+    drawer.classList.remove('expanded');
+    if (btn) btn.classList.remove('active-drawer-btn');
+    void drawer.offsetWidth; /* 强制回流：提交瞬时收起，恢复过渡后不会补播动画 */
+    drawer.style.transition = '';
+}
+
 function buildUI() {
     if (uiBuilt) return;
     uiBuilt = true;
@@ -4099,6 +4447,10 @@ function buildUI() {
             <h4>
                 <span class="rlog-title-text" title="单击折叠/展开">最近请求记录</span>
                 <span class="rlog-title-count" title="双击修改记录上限">${getHeaderCountText()}</span>
+                <span class="rlog-filter-indicator" id="rlog-filter-indicator" hidden>
+                    <span id="rlog-filter-indicator-text"></span>
+                    <button id="rlog-filter-reset-btn" title="重置筛选" aria-label="重置筛选"><i class="fa-solid fa-rotate-left"></i></button>
+                </span>
             </h4>
             <div class="rlog-header-drag-space" style="flex: 1; height: 28px; cursor: move; margin: 0 10px;"></div>
             <div class="rlog-header-actions">
@@ -4121,8 +4473,30 @@ function buildUI() {
                         <i class="fa-solid fa-sun"></i>
                     </button>
                 </div>
+                <div class="rlog-filter-drawer" id="rlog-filter-drawer">
+                    <span class="rlog-filter-group">
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="source" data-filter-value="native" title="原生请求"><i class="fa-solid fa-paper-plane"></i></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="source" data-filter-value="plugin" title="插件/非原生请求"><i class="fa-solid fa-puzzle-piece"></i></button>
+                    </span>
+                    <span class="rlog-filter-group">
+                        <button class="rlog-filter-chip rlog-filter-chip-on rlog-filter-chip-model" data-filter-group="model" data-filter-value="gemini" title="Gemini">${FILTER_MODEL_SVG.gemini_full}</button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on rlog-filter-chip-model" data-filter-group="model" data-filter-value="claude" title="Claude"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${FILTER_MODEL_SVG.claude}"/></svg></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on rlog-filter-chip-model" data-filter-group="model" data-filter-value="deepseek" title="DeepSeek"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${FILTER_MODEL_SVG.deepseek}"/></svg></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="model" data-filter-value="other" title="其他"><i class="fa-solid fa-list"></i></button>
+                    </span>
+                    <span class="rlog-filter-group">
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="system" title="System"><i class="fa-solid fa-gear"></i></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="assistant" title="Assistant"><i class="fa-solid fa-comment-dots"></i></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="user" title="User"><i class="fa-solid fa-user"></i></button>
+                        <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="other" title="其他"><i class="fa-solid fa-list"></i></button>
+                    </span>
+                </div>
                 <button id="rlog-more-btn" class="rlog-header-btn" title="更多选项">
                     <i class="fa-solid fa-ellipsis"></i>
+                </button>
+                <button id="rlog-filter-btn" class="rlog-header-btn" title="筛选记录">
+                    <i class="fa-solid fa-filter"></i>
+                    <span class="rlog-filter-dot"></span>
                 </button>
                 <button id="rlog-collapse-all-btn" class="rlog-header-btn" title="折叠所有条目">
                     <i class="fa-solid fa-compress-alt"></i>
@@ -4177,8 +4551,17 @@ function buildUI() {
 
     const moreBtn = panelEl.querySelector('#rlog-more-btn');
     const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
+    const filterBtn = panelEl.querySelector('#rlog-filter-btn');
+    const filterDrawer = panelEl.querySelector('#rlog-filter-drawer');
+
     moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (filterDrawer.classList.contains('expanded')) {
+            /* 切换抽屉：旧抽屉瞬时收起（跳过过渡），新抽屉正常展开，避免两抽屉宽度叠加弹跳 */
+            closeDrawerInstant(filterDrawer, filterBtn);
+        } else {
+            closeFilterDrawer();
+        }
         moreDrawer.classList.toggle('expanded');
         if (moreDrawer.classList.contains('expanded')) {
             moreBtn.classList.add('active-drawer-btn');
@@ -4187,20 +4570,55 @@ function buildUI() {
         }
     });
 
-    /* 全局点击监听，用于点击外部收起“更多”抽屉 */
-    if (!document.rlogMoreDrawerListenerInstalled) {
-        document.rlogMoreDrawerListenerInstalled = true;
+    filterBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (moreDrawer.classList.contains('expanded')) {
+            /* 切换抽屉：旧抽屉瞬时收起（跳过过渡），新抽屉正常展开，避免两抽屉宽度叠加弹跳 */
+            closeDrawerInstant(moreDrawer, moreBtn);
+        } else {
+            closeMoreDrawer();
+        }
+        filterDrawer.classList.toggle('expanded');
+        if (filterDrawer.classList.contains('expanded')) {
+            filterBtn.classList.add('active-drawer-btn');
+        } else {
+            filterBtn.classList.remove('active-drawer-btn');
+        }
+    });
+
+    /* 筛选分段按钮点击：切换对应分组的开关 */
+    filterDrawer.querySelectorAll('.rlog-filter-chip').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleFilterChip(chip.dataset.filterGroup, chip.dataset.filterValue);
+        });
+    });
+
+    /* 标题旁「重置筛选」按钮 */
+    const filterResetBtn = panelEl.querySelector('#rlog-filter-reset-btn');
+    if (filterResetBtn) {
+        filterResetBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            resetFilters();
+        });
+    }
+
+    /* 全局点击监听：点击外部收起任一展开的抽屉（「更多」「筛选」互斥） */
+    if (!document.rlogHeaderDrawerListenerInstalled) {
+        document.rlogHeaderDrawerListenerInstalled = true;
         document.addEventListener('click', (e) => {
             if (panelEl && isPanelVisible) {
-                const drawer = panelEl.querySelector('#rlog-more-drawer');
-                const btn = panelEl.querySelector('#rlog-more-btn');
-                if (drawer && drawer.classList.contains('expanded')) {
-                    /* 如果点击区域不在抽屉内，且不在更多按钮上，则收起抽屉 */
-                    if (!drawer.contains(e.target) && !btn.contains(e.target)) {
+                const drawerPairs = [
+                    { drawer: panelEl.querySelector('#rlog-more-drawer'), btn: panelEl.querySelector('#rlog-more-btn') },
+                    { drawer: panelEl.querySelector('#rlog-filter-drawer'), btn: panelEl.querySelector('#rlog-filter-btn') },
+                ];
+                drawerPairs.forEach(({ drawer, btn }) => {
+                    if (drawer && drawer.classList.contains('expanded')
+                        && !drawer.contains(e.target) && !btn.contains(e.target)) {
                         drawer.classList.remove('expanded');
                         btn.classList.remove('active-drawer-btn');
                     }
-                }
+                });
             }
         });
     }
@@ -4218,9 +4636,14 @@ function buildUI() {
             /* 没有记录时无需确认，直接提示无内容可清空 */
             return;
         }
+        /* 筛选生效时在确认文案中注明被隐藏的记录也会一并清空 */
+        const visibleCount = getVisibleRecords().length;
+        const hiddenCount = records.length - visibleCount;
         showConfirmDialog({
             title: '清空所有记录',
-            message: `确定要清空全部 <strong>${records.length}</strong> 条请求记录吗？<br>此操作不可撤销。`,
+            message: hiddenCount > 0
+                ? `确定要清空全部 <strong>${records.length}</strong> 条请求记录吗？（其中 <strong>${hiddenCount}</strong> 条被筛选隐藏，也会一并清空）<br>此操作不可撤销。`
+                : `确定要清空全部 <strong>${records.length}</strong> 条请求记录吗？<br>此操作不可撤销。`,
             confirmText: '清空',
             cancelText: '取消',
             onConfirm: () => {
@@ -4232,11 +4655,9 @@ function buildUI() {
     panelEl.querySelector('#rlog-help-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         if (window.__RLogTour && typeof window.__RLogTour.start === 'function') {
-            /* 确保面板展开并且更多菜单收起 */
-            const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
-            const moreBtn = panelEl.querySelector('#rlog-more-btn');
-            moreDrawer.classList.remove('expanded');
-            moreBtn.classList.remove('active-drawer-btn');
+            /* 确保面板展开并且两个抽屉都收起 */
+            closeMoreDrawer();
+            closeFilterDrawer();
             
             if (isPanelCollapsed) togglePanelWindow();
             
@@ -4333,6 +4754,11 @@ function buildUI() {
 
     /* 安装 fetch 拦截（hook 始终安装，内部通过 masterEnabled 决定是否记录） */
     installFetchHook();
+    /* 安装同源 iframe fetch 拦截（酒馆助手等 iframe 内脚本的请求同样捕获） */
+    installIframeFetchHooks();
+
+    /* 同步筛选分段按钮视觉状态（默认全开；引导/API 改动过状态时以实际状态为准） */
+    updateFilterChipUI();
 
     renderPanelContent();
 }
@@ -4637,6 +5063,7 @@ window.__RLogApi = {
     },
     openDrawer: () => {
         if (!panelEl) return;
+        closeFilterDrawer();
         const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
         const moreBtn = panelEl.querySelector('#rlog-more-btn');
         if (moreDrawer) moreDrawer.classList.add('expanded');
@@ -4649,6 +5076,33 @@ window.__RLogApi = {
         if (moreDrawer) moreDrawer.classList.remove('expanded');
         if (moreBtn) moreBtn.classList.remove('active-drawer-btn');
     },
+    /* 筛选抽屉开关（供 tour.js 使用）；打开时自动收起「更多」抽屉 */
+    setFilterDrawer: (open) => {
+        if (!panelEl) return;
+        const filterDrawer = panelEl.querySelector('#rlog-filter-drawer');
+        const filterBtn = panelEl.querySelector('#rlog-filter-btn');
+        if (!filterDrawer) return;
+        if (open) {
+            closeMoreDrawer();
+            filterDrawer.classList.add('expanded');
+            filterBtn.classList.add('active-drawer-btn');
+        } else {
+            filterDrawer.classList.remove('expanded');
+            filterBtn.classList.remove('active-drawer-btn');
+        }
+    },
+    /* 筛选状态读写（供 tour.js 暂存/恢复；setFilterState 触发重建） */
+    getFilterState: () => JSON.parse(JSON.stringify(filterState)),
+    setFilterState: (state) => {
+        filterState = state && typeof state === 'object' ? state : createDefaultFilterState();
+        updateFilterChipUI();
+        panelContentDirty = true;
+        if (panelEl && isPanelVisible) renderPanelContent();
+    },
+    /* 重置筛选（供引导/回归测试/外部调用） */
+    resetFilters: () => resetFilters(),
+    toggleFilterChip: (group, value) => toggleFilterChip(group, value),
+    getVisibleRecordsCount: () => getVisibleRecords().length,
     /* 替换整个记录列表（供 tour.js 在引导期间清空/恢复记录使用） */
     setRecords: (newRecords) => {
         records = Array.isArray(newRecords) ? newRecords : [];
