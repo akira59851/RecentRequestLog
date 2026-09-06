@@ -5,7 +5,7 @@
 /* 【区块索引】（按文件从上到下的顺序）
    1. 可调参数          引导交互的数值常量（延时、边距等），调参只改这里
    2. 状态变量          引导运行期间的内存状态（当前步、UI 元素引用、记录备份等）
-   3. 引导步骤配置      12 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
+   3. 引导步骤配置      13 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
    4. 步骤行为辅助函数  步骤配置引用的具名动作（开/关抽屉、预览、搜索），与步骤一一对应
    5. 版本检查与启动    获取 manifest 版本号，与本地「已看版本」比对后决定是否展示引导
    6. 引导生命周期      开始 / 结束 / 切换步骤，含引导期间真实记录的备份与恢复
@@ -107,6 +107,10 @@
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-info',
             desc: '• 角色名<br>• 请求来源<br>• 时间戳<br>• 模型名称<br>• token数 [消息条数]（数字前有“~”表示降级为估算）'
+        },
+        {
+            targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-info',
+            desc: '<strong>长按</strong>这一行可<strong>置顶</strong>该记录或<strong>取消置顶</strong><br>置顶记录不占用普通记录上限'
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-actions-inner',

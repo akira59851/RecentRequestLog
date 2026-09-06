@@ -16,7 +16,8 @@
    11. 查看全文覆盖层     覆盖层标题栏、格式切换、内容区
    12. 偏好设置           轻量设置浮层（遮罩/标题/说明/Toggle 开关）
    13. 浮标               收起面板后的小型插件入口（图标、主题色、显隐）
-   14. 移动端适配         唯一断点 768px 的全部移动端规则
+   14. 置顶提示 toast     置顶/取消置顶轻量提示（颜色/定位/显隐）
+   15. 移动端适配         唯一断点 768px 的全部移动端规则
    ============================================================ */
 
 /* 颜色统一由下方「主题颜色变量总表」提供，调色只改变量表（明亮一行 + 暗色覆盖一行）。 */
@@ -37,10 +38,15 @@
     --rlog-bg: #ffffff;                /* 面板容器背景 */
     --rlog-bg-header: #f3f4f6;         /* 面板/弹窗标题栏背景 */
     --rlog-bg-record: #ffffff;         /* 记录标题栏背景 */
-    --rlog-bg-record-hover: #f9fafb;   /* 记录标题栏 hover 背景 */
+    --rlog-bg-record-hover: #f1f2f4;   /* 记录标题栏 hover 背景（日间略深，置顶常驻同步此色） */
     --rlog-bg-msg: #f9fafb;            /* 子消息标题栏背景 */
-    --rlog-bg-msg-hover: #f2f3f5;      /* 子消息标题栏 hover 背景 */
+    --rlog-bg-msg-hover: #ececee;      /* 子消息标题栏 hover 背景 */
     --rlog-bg-body: #f9fafb;           /* 记录正文区背景 */
+    /* 置顶/取消置顶提示 toast */
+    --rlog-pin-toast-bg: rgba(255, 255, 255, 0.9); /* 提示背景（少量透明度/微圆角/细边框） */
+    --rlog-pin-toast-border: #d1d5db;  /* 提示细边框 */
+    --rlog-pin-toast-text: #374151;    /* 提示文字 */
+    --rlog-pin-toast-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); /* 提示投影 */
     /* 边框 / 分隔线 */
     --rlog-border: #d1d5db;            /* 面板/弹窗边框、输入框边框、信息项竖线 */
     --rlog-divider: #d1d5db;           /* 记录信息项竖线分隔符（暗色与边框不同） */
@@ -169,6 +175,10 @@
     --rlog-bg-msg: #121214;
     --rlog-bg-msg-hover: #18181a;
     --rlog-bg-body: #121214;
+    --rlog-pin-toast-bg: rgba(39, 39, 42, 0.9); /* 暗色提示背景（少量透明度/微圆角/细边框） */
+    --rlog-pin-toast-border: #52525b;
+    --rlog-pin-toast-text: #e4e4e7;
+    --rlog-pin-toast-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
     --rlog-border: #3f3f46;
     --rlog-divider: #52525b;
     --rlog-border-header: #3f3f46;
@@ -806,12 +816,30 @@
     box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--rlog-source-color, #124e78) 90%, transparent); /* 记录标题栏 hover 彩条颜色（来源色 90% 透明度） */
 }
 
+/* 置顶记录：常驻复用 hover 效果（底色 + 来源色彩条），不新增图标/角标/特效 */
+.rlog-record.rlog-pinned .rlog-record-header {
+    background: var(--rlog-bg-record-hover);
+    box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--rlog-source-color, #124e78) 90%, transparent);
+}
+
+/* 移动端长按置顶重排期间的 hover 抑制：仅本次手势内覆盖 :hover，置顶记录常驻视觉不受影响 */
+#rlog-list.rlog-hover-suppress .rlog-record:not(.rlog-pinned) .rlog-record-header:hover {
+    background: var(--rlog-bg-record);
+    box-shadow: inset 0 0 0 0 transparent;
+}
+#rlog-list.rlog-hover-suppress .rmsg-header:hover {
+    background: var(--rlog-bg-msg);
+    box-shadow: inset 0 0 0 0 transparent;
+}
+
 .rlog-record-info {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
     min-width: 0;
+    -webkit-touch-callout: none; /* 移动端长按不弹系统菜单/文本选择 */
+    touch-action: pan-y; /* 允许触屏纵向滚动列表，长按静止才触发置顶 */
 }
 
 /* 角色名光学对齐微调（桌面端）：实测中心线与右侧信息项一致（差值≤0.8px 为字号固有），
@@ -1456,6 +1484,9 @@ mark.rlog-search-mark-current {
     white-space: pre-wrap;
     word-break: break-word;
     font-family: inherit; /* 覆盖 <pre> 默认等宽字体，继承 #rlog-panel 面板字体栈 */
+    user-select: text; /* 消息正文允许长按选取复制（不被父级/主题继承的不可选覆盖） */
+    -webkit-user-select: text;
+    -webkit-touch-callout: default; /* 不屏蔽正文的移动端系统长按 */
     max-height: 450px;
     overflow-y: auto;
     overflow-x: hidden;
@@ -2392,6 +2423,39 @@ mark.rlog-search-mark-current {
     display: flex;
 }
 
+/* ════════════════════════════════════════════════════════════
+   14. 置顶/取消置顶提示 toast
+   ── 挂在 #rlog-panel 内（面板顶部正中），短暂显示、点击可提前消除。
+   ── 极简模式由 :host(.rlog-minimal) 的 `transition:none!important` 统一关掉淡入淡出。
+   ════════════════════════════════════════════════════════════ */
+.rlog-pin-toast {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -8px);
+    max-width: 80%;
+    padding: 8px 14px;
+    border-radius: 4px;
+    background: var(--rlog-pin-toast-bg);
+    border: 1px solid var(--rlog-pin-toast-border);
+    color: var(--rlog-pin-toast-text);
+    box-shadow: var(--rlog-pin-toast-shadow);
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: center;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 60; /* 高于面板头部(未显式 z-index)与记录标题栏(20)，只临时覆盖 */
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.rlog-pin-toast.rlog-pin-toast-active {
+    opacity: 1;
+    transform: translate(-50%, 8px);
+    pointer-events: auto;
+    cursor: pointer;
+}
+
 /* ============================================================
    移动端适配（唯一断点：max-width: 768px）
    所有移动端规则集中在此，改断点只改这一处。
@@ -2407,6 +2471,10 @@ mark.rlog-search-mark-current {
         max-height: 75vh;
         top: 40px;
         border-radius: 0;
+    }
+    .rlog-pin-toast {
+        font-size: 11px;
+        padding: 7px 12px;
     }
     /* 移动端浮标（≤768px）：与桌面 36×36 同步缩到 32×32，book 图标相应缩小 */
     .rlog-badge {
