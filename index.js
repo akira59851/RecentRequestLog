@@ -200,8 +200,14 @@ let panelShadowRoot = null;
 /* HTMLElement|null: 影子宿主元素（挂在 body 上，承载影子根） */
 let shadowHostEl = null;
 
-/* HTMLElement|null: 浮标元素（收起面板后的小型插件入口，挂在影子根内、与面板平级） */
+/* HTMLElement|null: 浮标 light DOM 宿主（收起面板后的小型插件入口）。
+   新版拆成独立 light DOM host（#rlog-badge-host）并挂到 document.body，
+   供第三方收纳插件识别/收纳；可见视觉在其自己的 shadow root 内（.rlog-badge-visual）。 */
 let badgeEl = null;
+
+/* HTMLElement|null: 浮标可见视觉元素（挂在 badgeEl 自己的 shadow root 内）。
+   document 查找不到，仅供 __RLogApi.getBadgeVisualEl() 等测试辅助使用。 */
+let badgeVisualEl = null;
 
 /* {left,top}|null: 浮标会话内位置（浮标左上角坐标）。
    首次收起记录点击座标，拖动后更新，再次收起复用；页面刷新/重新初始化时随模块重载自动清空。 */
@@ -4882,6 +4888,24 @@ function getDefaultBadgePos() {
     );
 }
 
+/* 浮标尺寸同步：host 的宽/高随桌面 36 / 移动 32 切换（getBadgeSize 已按断点返回）。
+   初始化与 resize 时调用，避免桌面↔移动切换后尺寸不同步。 */
+function updateBadgeSize() {
+    if (!badgeEl) return;
+    const size = getBadgeSize();
+    badgeEl.style.width = size + 'px';
+    badgeEl.style.height = size + 'px';
+}
+
+/* 浮标主题变量：把原挂 #rlog-shadow-host 的三个浮标变量接到新的 light DOM host 上，
+   由 host 跨影子边界继承给 shadow root 内的 .rlog-badge-visual，配色仍跟随 ST 主题。 */
+function syncBadgeThemeVars() {
+    if (!badgeEl) return;
+    badgeEl.style.setProperty('--rlog-badge-bg', 'color-mix(in srgb, var(--SmartThemeQuoteColor, #52525b) 75%, transparent)');
+    badgeEl.style.setProperty('--rlog-badge-icon', '#ffffff');
+    badgeEl.style.setProperty('--rlog-badge-border', 'var(--SmartThemeQuoteColor, #52525b)');
+}
+
 /* 重置面板为默认定位/尺寸：清掉此前拖拽/缩放写入的 inline 样式，让 CSS 默认值生效
    （默认：top:80px + left:50% + translateX(-50%) + 宽高/上下限走 style.css 基准）。
    不额外做边界修正：默认定位本就居中/贴边、在视口内（水平由 95vw 上限保证，
@@ -4905,6 +4929,8 @@ function setBadgeActive(active) {
     if (!badgeEl) return;
     if (active) badgeEl.classList.add('rlog-badge-active');
     else badgeEl.classList.remove('rlog-badge-active');
+    /* host 是 light DOM，用 inline display 最稳，避免第三方主题通过普通 CSS 影响显隐 */
+    badgeEl.style.display = active ? 'flex' : 'none';
 }
 
 /* 标题文字点击触发的「面板 ↔ 浮标」切换。
@@ -5075,6 +5101,25 @@ function buildFaShimStyle() {
         rules.push(`.fa-solid.fa-${name}:before{content:"${code}"}`);
     }
     style.textContent = rules.join('\n');
+    return style;
+}
+
+/* 浮标视觉样式：浮标已拆成独立 light DOM host（#rlog-badge-host），可见视觉放在它自己的 shadow root 内。
+   - host 本身只负责定位/尺寸/光标/透明背景（走 inline 样式），不放视觉；
+   - 视觉（背景/边框/圆角/图标颜色/字号）全部由 shadow root 内 .rlog-badge-visual 提供，
+     第三方主题的普通 CSS 依然碰不到（继续受 Shadow DOM 隔离）；
+   - --rlog-badge-* 自定义属性由 syncBadgeThemeVars() 写到 host 上，跨影子边界继承给视觉元素，
+     配色仍跟随 ST 主题（--SmartThemeQuoteColor 引用文本色）。 */
+function buildBadgeStyle() {
+    const style = document.createElement('style');
+    style.textContent = [
+        ':host{box-sizing:border-box;background:transparent;border:0;padding:0;margin:0}',
+        '.rlog-badge-visual{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
+            + 'border-radius:6px;background:var(--rlog-badge-bg,#52525b);'
+            + 'border:1px solid var(--rlog-badge-border,#52525b);color:var(--rlog-badge-icon,#fff);'
+            + 'font-size:16px;cursor:pointer;user-select:none;-webkit-user-select:none}',
+        '@media(max-width:768px){.rlog-badge-visual{font-size:14px}}',
+    ].join('\n');
     return style;
 }
 
@@ -5261,16 +5306,38 @@ function buildUI() {
     panelShadowRoot.appendChild(panelEl);
     document.body.appendChild(shadowHostEl);
 
-    /* 浮标：收起面板后的小型插件入口（与 #rlog-panel 平级，放在影子根内），默认隐藏。
-       复用插件列表里的 fa-book 图标（已在影子内 FA 固壳 FA_SOLID_CONTENT），主题类随面板同步。 */
+    /* 浮标：拆成独立 light DOM host（#rlog-badge-host）+ 自己的 shadow root。
+       - host 暴露在普通 DOM，带 script_id/role/title/class/固定定位，供第三方收纳插件识别/收纳；
+       - 可见视觉放在 host 自己的 shadow root 内（.rlog-badge-visual），第三方主题 CSS 碰不到；
+       - 里面放一个隐藏的 light DOM 图标，方便收纳插件用 querySelector('i') 提取图标；
+       - host 只承担定位/尺寸/光标/透明背景，不放视觉。 */
     badgeEl = document.createElement('div');
-    badgeEl.id = 'rlog-badge';
-    badgeEl.className = 'rlog-badge';
+    badgeEl.id = 'rlog-badge-host';
+    badgeEl.className = 'rlog-badge-host rlog-floating-button';
+    badgeEl.setAttribute('script_id', 'recent-request-log-badge');
+    badgeEl.setAttribute('role', 'button');
+    badgeEl.setAttribute('aria-label', '最近请求记录');
     badgeEl.title = '最近请求记录';
-    badgeEl.innerHTML = '<i class="fa-solid fa-book"></i>';
-    panelShadowRoot.appendChild(badgeEl);
+    badgeEl.style.cssText =
+        `position:fixed;display:none;width:${getBadgeSize()}px;height:${getBadgeSize()}px;`
+        + 'cursor:pointer;z-index:2999;box-sizing:border-box;background:transparent;border:0;padding:0;margin:0;';
+    /* 隐藏的 light DOM 图标：宿主有 shadow root，light 子元素默认不渲染，且带 hidden，双保险不显示 */
+    badgeEl.innerHTML = '<i class="fa-solid fa-book" hidden></i>';
+
+    const badgeShadowRoot = badgeEl.attachShadow({ mode: 'open' });
+    badgeShadowRoot.appendChild(buildBadgeStyle());
+    badgeShadowRoot.appendChild(buildFaShimStyle());
+    badgeVisualEl = document.createElement('div');
+    badgeVisualEl.className = 'rlog-badge-visual';
+    badgeVisualEl.innerHTML = '<i class="fa-solid fa-book"></i>';
+    badgeShadowRoot.appendChild(badgeVisualEl);
+    document.body.appendChild(badgeEl);
+
+    /* 把浮标主题变量挂到 host，并同步当前尺寸；然后交给指针交互 */
+    syncBadgeThemeVars();
+    updateBadgeSize();
     initBadgeInteraction();
-    /* 宿主与浮标已就绪：重放一次主题类，让宿主带上 .rlog-light（浮标配色挂宿主，需此切换亮暗） */
+    /* host 就绪后重放主题类（浮标可见视觉由 host 上的 --rlog-badge-* 提供） */
     applyTheme();
 
     /* H4 标题文字拆分：文字部分单击折叠/展开，数字部分双击设置最大记录数 */
@@ -5603,6 +5670,8 @@ function buildUI() {
         window.rlogHeaderVarResizeInstalled = true;
         window.addEventListener('resize', () => {
             syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+            /* 桌面↔移动切换时同步浮标尺寸 */
+            updateBadgeSize();
             /* 浮标可见时随视口变化 clamp 回可视区域，避免窗口缩小后浮标跑出屏幕。
                不限定折叠态：默认入口模式下浮标可能在非折叠态（面板关闭）显示，同样需要 clamp。 */
             if (badgeEl && badgeEl.classList.contains('rlog-badge-active')) {
@@ -5874,26 +5943,35 @@ function initBadgeInteraction() {
         dragActive = false;
         e.stopPropagation();
         try { badgeEl.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-        /* 未拖动 → 视为点击，恢复面板 */
-        if (!dragged) {
-            /* 点击浮标恢复面板：浮标隐藏、面板出现在同坐标，后续原生 click 可能落到面板按钮
-               （更多/筛选）上误开抽屉。置一次性标记，交给上面的 document 捕获守卫拦掉这一次。 */
+        const wasDrag = dragged;
+        if (wasDrag) {
+            /* 拖拽：浏览器仍会在 pointerup 后补发原生 click，拦掉它以免误当成「点击打开面板」 */
             badgeSuppressNextClick = true;
             setTimeout(() => { badgeSuppressNextClick = false; }, 0);
-            /* 「浮标默认入口」：点浮标=打开面板并回默认位置（默认入口下 isPanelCollapsed 可能为
-               false，不能走 togglePanelWindow 的「切换」语义，否则会再次收起）；非默认入口走原折叠切换。 */
-            if (preferences.badgeDefault) showPanel();
-            else togglePanelWindow();
         }
+        if (e.type === 'pointercancel') {
+            /* 指针取消（如触摸被系统打断）：不派生 click，直接结束 */
+            dragged = false;
+            return;
+        }
+        /* 未拖动：这里不再打开面板/隐藏浮标，交给随后的 click 阶段处理。
+           让浮标在整个 click 事件派发期间保持可见，需要在该阶段识别它的第三方插件不会因我们提前隐藏而失效；
+           面板打开延后到 click 之后（下面 click 监听里 setTimeout），因此面板也不会误接同一次 click。 */
         dragged = false;
     };
     badgeEl.addEventListener('pointerup', onBadgeUp);
     badgeEl.addEventListener('pointercancel', onBadgeUp);
-    /* pointerup 恢复面板后，浏览器仍会派发原生 click 并冒泡到文档；
-       此时 isPanelCollapsed 已复位，「点击面板外关闭」监听会误把面板关掉，
-       因此在浮标上消化掉该 click，不让它冒泡到文档级监听。 */
+    /* 点击（含第三方对 host 直接触发的原生 click）：
+       - 拖拽后的补发 click 已被上面 badgeSuppressNextClick 守卫拦掉，不会走到这里；
+       - 这里只把「打开面板」延后到本次 click 全部派发完之后执行，保持浮标在该阶段可见；
+       - 不再主动 stopPropagation，让 click 正常冒泡，不挡住其他监听（各 state 已保证不会误关面板）。 */
     badgeEl.addEventListener('click', (e) => {
-        e.stopPropagation();
+        /* 兜底：若拖拽后的 click 未被上游拦掉（极少数），这里再拦一次 */
+        if (badgeSuppressNextClick) return;
+        setTimeout(() => {
+            if (preferences.badgeDefault) showPanel();
+            else togglePanelWindow();
+        }, 0);
     });
 }
 
@@ -6019,8 +6097,10 @@ window.__RLogApi = {
     records: () => records,
     /* 面板/影子根访问（供 tour.js 使用）：面板已挂进影子根，document 查找不到，改从这里取 */
     getPanelEl: () => panelEl,
-    /* 浮标访问（测试辅助）：浮标同样在影子根内，document 查找不到 */
+    /* 浮标访问（测试辅助）：真实浮标已拆为 light DOM host #rlog-badge-host（视觉在其 shadow root 内），
+       document 可直接查到该 host；可见视觉元素用 getBadgeVisualEl() 获取。 */
     getBadgeEl: () => badgeEl,
+    getBadgeVisualEl: () => badgeVisualEl,
     q: (sel) => (panelShadowRoot ? panelShadowRoot.querySelector(sel) : null),
     /* 搜索相关（供 tour.js 使用） */
     openSearchForRecord: (recordIndex) => openSearchForRecord(recordIndex),
