@@ -85,11 +85,11 @@
         },
         {
             targetSelector: '.rlog-header-actions',
-            desc: '• 更多选项<br>• 筛选记录<br>• 折叠所有条目<br>• 关闭面板'
+            desc: '• 更多选项<br>• 筛选记录<br>• 全局搜索（占位）<br>• 折叠所有条目<br>• 关闭面板'
         },
         {
             targetSelector: '#rlog-more-drawer',
-            desc: '点击<strong>更多选项</strong>显示：<br>• 插件总开关<br>• 使用引导<br>• 偏好设置<br>• 临时测试按钮（后续移除）<br>• 内容预览开关<br>• 清空所有记录<br>• 昼/夜模式切换',
+            desc: '点击<strong>更多选项</strong>显示：<br>• 插件总开关<br>• 使用引导<br>• 偏好设置<br>• 内容预览开关<br>• 清空所有记录<br>• 昼/夜模式切换<br>• <strong>生成模拟记录</strong>（不实际发送）',
             onEnter: enterDrawerStep,
             onLeave: leaveDrawerStep
         },
@@ -115,7 +115,7 @@
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-actions-inner',
-            desc: '<strong>展开时显示：</strong><br>• 搜索<br>• 展开/折叠内部所有消息<br>• <strong>快速置底</strong><br>• <strong>查看全文</strong>（原<strong>复制整条请求</strong>移入内部）<br>• 删除本条记录'
+            desc: '<strong>展开时显示：</strong><br>• 搜索<br>• 展开/折叠内部所有消息<br>• 快速置底<br>• 查看全文（复制整条请求）<br>• 删除本条记录'
         },
         {
             targetSelector: '.rlog-search-box',

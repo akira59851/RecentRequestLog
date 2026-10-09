@@ -4,7 +4,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "akira",
-    "version": "1.17.0",
+    "version": "1.18.0",
     "repository": "https://github.com/akira59851/RecentRequestLog",
     "description": "记录 SillyTavern 及第三方插件实际发给 AI 的请求与返回内容，方便回溯、查看与调试。"
 }

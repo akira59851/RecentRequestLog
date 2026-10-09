@@ -58,7 +58,7 @@
     --rlog-text-muted: #6b7280;        /* 次要文字/图标（时间、模型、按钮、计数等） */
     --rlog-text-faint: #9ca3af;        /* 弱化文字（计数、占位、折叠箭头、空列表等） */
     --rlog-text-faint-hover: #4b5563;  /* 弱化文字的 hover 加深色（标题数字 hover） */
-    --rlog-icon-faint: #9ca3af;        /* 浅灰图标（关闭/折叠箭头；暗色比弱化文字略亮） */
+    --rlog-icon-faint: #9ca3af;        /* 浅灰图标（折叠箭头、消息展开、浮层关闭等次要图标；暗色比弱化文字略亮） */
     --rlog-text-body: #374151;         /* 消息正文 / 弹窗正文 */
     --rlog-text-char: #27272A;         /* 记录角色名 */
     --rlog-text-source: #475569;       /* 来源标签文字（原生/插件同色） */
@@ -67,8 +67,8 @@
     --rlog-accent-strong: #0d3a5a;     /* 强调色加深（搜索激活 hover） */
     --rlog-accent-soft: rgba(18, 78, 120, 0.08);  /* 强调色淡背景（搜索激活 hover 背景） */
     --rlog-accent-glow: rgba(18, 78, 120, 0.15);  /* 输入框聚焦外圈光晕 */
-    --rlog-danger: #ef4444;            /* 危险/删除图标色 */
-    --rlog-danger-bg: #fee2e2;         /* 危险图标 hover 背景 */
+    --rlog-danger: #c0554e;            /* 危险/删除图标色 */
+    --rlog-danger-bg: #f7e7e4;         /* 危险图标 hover 背景 */
     --rlog-success: #10b981;           /* 成功色（总开关图标等） */
     --rlog-deep-bg: #124e78;           /* 主按钮底色（引导/弹窗确定，亮暗相同） */
     --rlog-deep-bg-hover: #0f4063;     /* 主按钮 hover 底色（亮暗相同） */
@@ -91,6 +91,7 @@
     --rlog-status-succeed: #6E9F4A;     /* 成功标记文字色 */
     --rlog-status-fail: #C05E59;        /* 失败标记文字色 */
     --rlog-status-timeout: #B69D24;     /* 超时标记文字色 */
+    --rlog-status-simulated: #3E7CB1;   /* 模拟标记文字色（未实际发送） */
     /* Token 区间配色（0-6 级，7 级在下方另带脉冲动画） */
     --rlog-tier-0: #5B8DB8;
     --rlog-tier-1: #4C9DA8;
@@ -114,9 +115,9 @@
     --rlog-copy-s-border: #10b981;      /* 复制成功边框（亮暗相同） */
     --rlog-copy-s-bg: #ecfdf5;          /* 复制成功背景 */
     --rlog-copy-s-text: #047857;        /* 复制成功文字 */
-    --rlog-copy-f-border: #ef4444;      /* 复制失败边框（亮暗相同） */
-    --rlog-copy-f-bg: #fef2f2;          /* 复制失败背景 */
-    --rlog-copy-f-text: #b91c1c;        /* 复制失败文字 */
+    --rlog-copy-f-border: #c0554e;      /* 复制失败边框（亮暗相同） */
+    --rlog-copy-f-bg: #f9eeec;          /* 复制失败背景 */
+    --rlog-copy-f-text: #a2403b;        /* 复制失败文字 */
     /* 搜索 */
     --rlog-search-bg: rgba(0, 0, 0, 0.05);    /* 输入框容器背景 */
     --rlog-search-bg-hover: rgba(0, 0, 0, 0.08); /* 容器 hover/聚焦背景 */
@@ -196,8 +197,8 @@
     --rlog-accent-strong: #8bbde0;
     --rlog-accent-soft: rgba(107, 169, 212, 0.15);
     --rlog-accent-glow: rgba(107, 169, 212, 0.15);
-    --rlog-danger: #f87171;
-    --rlog-danger-bg: rgba(248, 113, 113, 0.15);
+    --rlog-danger: #d98c87;
+    --rlog-danger-bg: rgba(217, 140, 135, 0.16);
     --rlog-hover-bg: rgba(255, 255, 255, 0.08);
     --rlog-hover-bg-strong: rgba(255, 255, 255, 0.12);
     --rlog-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
@@ -208,6 +209,7 @@
     --rlog-status-succeed: #7EAE55;
     --rlog-status-fail: #ba4e49;
     --rlog-status-timeout: #BEAD40;
+    --rlog-status-simulated: #6FA3CE;
     --rlog-tier-0: #6A9BC4;
     --rlog-tier-1: #5BA9B4;
     --rlog-tier-2: #58AA91;
@@ -227,8 +229,8 @@
     --rlog-flash-bg: #26262b;
     --rlog-copy-s-bg: rgba(16, 185, 129, 0.1);
     --rlog-copy-s-text: #1AC888;
-    --rlog-copy-f-bg: rgba(239, 68, 68, 0.1);
-    --rlog-copy-f-text: #f87171;
+    --rlog-copy-f-bg: rgba(217, 140, 135, 0.12);
+    --rlog-copy-f-text: #d98c87;
     --rlog-search-bg: rgba(255, 255, 255, 0.08);
     --rlog-search-bg-hover: rgba(255, 255, 255, 0.12);
     --rlog-search-text: #f4f4f5;
@@ -296,13 +298,13 @@
     --rlog-dlg-confirm-bg-hover: #0f4063;/* 确定按钮 hover 背景（亮暗相同） */
     --rlog-dlg-confirm-border: #0d3a5a;  /* 确定按钮边框（亮暗相同） */
     --rlog-dlg-confirm-border-hover: #0a2940; /* 确定按钮 hover 边框（亮暗相同） */
-    --rlog-dlg-danger-bg: #dc2626;       /* 危险按钮背景（亮暗相同） */
-    --rlog-dlg-danger-bg-hover: #b91c1c; /* 危险按钮 hover 背景（亮暗相同） */
-    --rlog-dlg-danger-border: #b91c1c;   /* 危险按钮边框（亮暗相同） */
-    --rlog-dlg-danger-border-hover: #991b1b; /* 危险按钮 hover 边框（亮暗相同） */
+    --rlog-dlg-danger-bg: #bb4a45;       /* 危险按钮背景（亮暗相同） */
+    --rlog-dlg-danger-bg-hover: #a2403b; /* 危险按钮 hover 背景（亮暗相同） */
+    --rlog-dlg-danger-border: #a2403b;   /* 危险按钮边框（亮暗相同） */
+    --rlog-dlg-danger-border-hover: #8a342f; /* 危险按钮 hover 边框（亮暗相同） */
     --rlog-dlg-danger-text: #ffffff;     /* 危险按钮文字（亮暗相同） */
-    --rlog-dlg-danger: #ef4444;          /* 弹窗关闭按钮 hover 红 */
-    --rlog-dlg-danger-bg-soft: #fee2e2;  /* 弹窗关闭按钮 hover 背景 */
+    --rlog-dlg-danger: #c0554e;          /* 弹窗关闭按钮 hover 红 */
+    --rlog-dlg-danger-bg-soft: #f7e7e4;  /* 弹窗关闭按钮 hover 背景 */
     --rlog-dlg-overlay: rgba(0, 0, 0, 0.45); /* 弹窗遮罩背景（亮暗相同） */
 }
 
@@ -381,8 +383,8 @@
     --rlog-dlg-cancel-border: #52525b;
     --rlog-dlg-cancel-bg-hover: #52525b;
     --rlog-dlg-cancel-border-hover: #71717a;
-    --rlog-dlg-danger: #f87171;
-    --rlog-dlg-danger-bg-soft: rgba(248, 113, 113, 0.15);
+    --rlog-dlg-danger: #d98c87;
+    --rlog-dlg-danger-bg-soft: rgba(217, 140, 135, 0.16);
 }
 
 /* ── 框架：面板容器 (明亮主题默认) ─────────────── */
@@ -419,6 +421,7 @@
     border-bottom: 1px solid var(--rlog-border-header);
     user-select: none;
     flex-shrink: 0;
+    flex-wrap: wrap; /* 放不下时按钮区整组换到第二行（窄面板 / 移动端 / 移动端全屏）；够宽不触发 */
 }
 
 .rlog-panel-header h4 {
@@ -432,6 +435,7 @@
     align-items: center;
     gap: 0;
     font-family: inherit; /* 与「查看全文」标题一致：避免 ST 全局 h4 样式引入不同字体 */
+    white-space: nowrap; /* 极窄时标题行整体不换行（逐字纵向排列会把标题栏顶高）；同时挡掉宿主 white-space 继承 */
 }
 /* 标题文字 — 单击折叠/展开窗口 */
 .rlog-title-text {
@@ -466,10 +470,11 @@
 }
 
 .rlog-header-actions {
-    --rlog-header-gap: 6px; /* 按钮区统一间距；抽屉折叠时靠下方负外边距抵消半个间距，保证相邻可见按钮视觉间距一致 */
+    --rlog-header-gap: 5px; /* 按钮区统一间距；抽屉折叠时靠下方负外边距抵消半个间距，保证相邻可见按钮视觉间距一致 */
     display: flex;
     align-items: center;
     gap: var(--rlog-header-gap);
+    margin-left: auto; /* 按钮区换到第二行后右对齐；单行时无自由空间，不产生位移 */
 }
 
 /* 「更多」「筛选」抽屉是按钮区最前面的 flex 项：展开时按钮区向左延伸，「更多」及其右侧按钮位置不动。
@@ -485,11 +490,11 @@
     border: none;
     border-radius: 4px;
     color: var(--rlog-text-muted);
-    font-size: 15px;
+    font-size: 13.5px;
     cursor: pointer;
     padding: 0;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
@@ -500,18 +505,28 @@
 #rlog-more-btn.active-drawer-btn,
 #rlog-filter-btn.active-drawer-btn { color: var(--rlog-text-strong); background: var(--rlog-hover-bg); }
 
+/* 禁用态（生成模拟记录进行中）：置灰并维持原色，不响应悬停高亮 */
+.rlog-header-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+.rlog-header-btn:disabled:hover {
+    color: var(--rlog-text-muted);
+    background: transparent;
+}
+
 #rlog-clear-btn:hover { color: var(--rlog-danger); background: var(--rlog-danger-bg); }
 
 #rlog-close-btn {
     background: transparent;
     border: none;
     border-radius: 4px;
-    color: var(--rlog-icon-faint);
-    font-size: 17px;
+    color: var(--rlog-text-muted);
+    font-size: 16px;
     cursor: pointer;
     padding: 0;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
@@ -524,40 +539,65 @@
 .rlog-more-drawer {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     overflow: hidden;
     height: 0; /* 宽度与高度都要归零：只留宽度归零会被内部内容高度撑高（如筛选抽屉多行分段按钮） */
     max-width: 0;
     opacity: 0;
-    transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
-    /* 与 overflow:hidden 配合，保证 JS 测量出的是单行完整宽度 */
+    /* 展开不做宽度过渡：布局一次到位（含换行），视觉上只让内容从右侧滑进来 —— 位移只重绘/合成、
+       不触发重排，所以「展开后会换行」也不会在动画中途折行，换行与动画得以共存。
+       收起保持瞬时：本侧若写过渡会留下「内容已走、位置还占着」的空档（窄面板下按钮区要等空档
+       结束才回单行）。展开方向的动画写在 .expanded 一侧；各端一致，整体关动画只走极简模式。 */
+    --rlog-drawer-shift: 220px; /* 内容起始位移，取略大于本抽屉内容宽度，保证第一帧完全在盒外 */
+    transition: none;
+    /* 折叠态内容仍按单行布局，靠 overflow:hidden 裁掉 */
     white-space: nowrap;
+}
+.rlog-more-drawer > * {
+    transform: translateX(var(--rlog-drawer-shift));
 }
 .rlog-more-drawer.expanded {
     height: auto;
-    max-width: 360px; /* 足够容纳所有按钮的预估宽度 */
+    max-width: 560px; /* 展开宽度实际由内容与所在行决定；这里只给个够用的上限 */
     opacity: 1;
+    transition: opacity 0.2s ease;
+}
+.rlog-more-drawer.expanded > * {
+    transform: translateX(0);
+    transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1); /* 过渡只写在展开态：收起方向不播、瞬时归位 */
 }
 
 /* ── 筛选抽屉与分段按钮 ─────────────────────── */
 .rlog-filter-drawer {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     overflow: hidden;
     height: 0; /* 避免内部多行分段按钮把标题栏撑高换行 */
     max-width: 0;
     opacity: 0;
-    transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
-    /* 与「更多」抽屉一致 */
-    white-space: nowrap;
+    /* 与「更多」抽屉同一套机制（见上方注释） */
+    --rlog-drawer-shift: 280px;
+    transition: none;
+    /* 放不下时内部折行；折行在动画开始前就已定稿，所以不再需要按宽度判断是否关掉动画 */
+    flex-wrap: wrap;
+    white-space: normal;
+    min-width: 0;
+}
+.rlog-filter-drawer > * {
+    transform: translateX(var(--rlog-drawer-shift));
 }
 .rlog-filter-drawer.expanded {
     height: auto;
-    max-width: 440px; /* 三组分段按钮（来源/模型/角色图标）的完整宽度 */
+    max-width: 560px;
     opacity: 1;
+    transition: opacity 0.2s ease;
 }
-/* 三组分段按钮（来源/模型/角色）：组内紧贴成一段，组间由抽屉 gap 分隔，不再画分隔线 */
+.rlog-filter-drawer.expanded > * {
+    transform: translateX(0);
+    transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1); /* 同「更多」抽屉 */
+}
+/* 三组分段按钮（来源/模型/角色）：组内紧贴成一段，组间由抽屉 gap 分隔 */
 .rlog-filter-group {
     display: inline-flex;
     align-items: center;
@@ -567,9 +607,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 3px;
-    width: 28px; /* 小正方形按钮：只放图标，不占文字宽度 */
-    height: 28px;
+    width: 26px; /* 小正方形按钮：只放图标，不占文字宽度 */
+    height: 26px;
     padding: 0;
     border: 1px solid var(--rlog-filter-chip-border);
     border-radius: 0; /* 默认无圆角：组首/组尾外角由下方规则补小圆角 */
@@ -1111,6 +1150,7 @@
 .rlog-reply-status-succeed { color: var(--rlog-status-succeed); opacity: 0.85; }
 .rlog-reply-status-fail { color: var(--rlog-status-fail); opacity: 0.85; }
 .rlog-reply-status-timeout { color: var(--rlog-status-timeout); opacity: 0.85; } /* 超时标记颜色——已单独配色，与 Response 角色色无关 */
+.rlog-reply-status-simulated { color: var(--rlog-status-simulated); opacity: 0.85; } /* 模拟标记（无真实回复，建档即标注） */
 
 /* ── 搜索功能 ──────────────────────────────────── */
 
@@ -1165,7 +1205,7 @@
 .rlog-search-box {
     display: flex;
     align-items: center;
-    gap: 0; /* 紧贴排列，把宽度留给输入框 */
+    gap: 3px;
     min-width: 0;
     max-width: 100%;
     overflow: hidden; /* 内容超出时裁剪，保证按钮不被推出容器 */
@@ -1206,10 +1246,6 @@
     background: var(--rlog-hover-bg);
     color: var(--rlog-text-strong);
 }
-/* 输入框（含计数）与下一条按钮之间的间距 */
-.rlog-search-next {
-    margin-left: 1px;
-}
 
 /* FA 图标几何居中：绝对定位必须落在 ::before（字形本体）上，不能放 <i>——<i> 的行盒仍受
    line-height 与字形内白边影响，盒子居中 ≠ 字形居中 */
@@ -1235,7 +1271,7 @@
     width: 140px;           /* flex-basis 基础宽度 */
     min-width: 0;           /* 可完全弹性收缩 */
     max-width: 220px;
-    margin-left: 1px;       /* 放大镜与输入框之间的间距 */
+    margin-left: 3px;       /* 与放大镜之间的间距（gap 管不到首个元素） */
     height: 24px;
     box-sizing: border-box;
     display: flex;
@@ -1243,7 +1279,7 @@
     border-radius: 4px;
     background: var(--rlog-search-bg);
     overflow: hidden;       /* 防止内容溢出圆角 */
-    padding-right: 3px;     /* 计数右侧的固定边距：数字变宽时向左扩展 */
+    padding-right: 5px;     /* 计数右侧的固定边距：数字变宽时向左扩展 */
     transition: background 0.15s ease;
 }
 .rlog-search-input-wrap:hover {
@@ -1298,6 +1334,11 @@
     line-height: 1;
     overflow: hidden;       /* 超出 max-width 时省略 */
     text-overflow: ellipsis;
+}
+
+/* 有关键词但无命中：计数转红 */
+.rlog-search-count-empty {
+    color: var(--rlog-danger);
 }
 
 /* 禁用态（无结果或仅一个结果时箭头灰显） */
@@ -1385,12 +1426,25 @@ mark.rlog-search-mark-current {
 .rmsg-item.role-response .rmsg-header:hover { box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--rlog-role-response) 90%, transparent); }
 .rmsg-item.role-other .rmsg-header:hover { box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--rlog-role-other) 90%, transparent); }
 
-/* 快速置底/回顶的标题栏闪烁：只闪一次，底色比 hover 深一档；类由 JS 添加并在 animationend 后移除 */
-.rlog-record-header.rlog-flash-bottom,
-.rmsg-header.rlog-flash-bottom {
-    animation: rlog-flash-bottom 0.9s ease-in-out;
+/* 快速置底/回顶的标题栏闪烁：只闪一次，底色比 hover 深一档。
+   rlog-flash-bottom 是「正在闪」的标记类（JS 与回归脚本都按它判存在）；
+   rlog-flash-a / rlog-flash-b 两个动画名由 JS 轮换：同一标题栏在动画没播完时再次触发，
+   靠动画名变化从头重播。
+   ⚠ 两套内容除动画名外必须完全一致：改这里任何一条都要同步改另一条 */
+.rlog-record-header.rlog-flash-bottom.rlog-flash-a,
+.rmsg-header.rlog-flash-bottom.rlog-flash-a {
+    animation: rlog-flash-bottom-a 0.9s ease-in-out;
 }
-@keyframes rlog-flash-bottom {
+.rlog-record-header.rlog-flash-bottom.rlog-flash-b,
+.rmsg-header.rlog-flash-bottom.rlog-flash-b {
+    animation: rlog-flash-bottom-b 0.9s ease-in-out;
+}
+/* ⚠ 与 rlog-flash-bottom-b 逐行一致（只差动画名） */
+@keyframes rlog-flash-bottom-a {
+    0%, 100% { background-color: transparent; }
+    50% { background-color: var(--rlog-flash-bg); }
+}
+@keyframes rlog-flash-bottom-b {
     0%, 100% { background-color: transparent; }
     50% { background-color: var(--rlog-flash-bg); }
 }
@@ -1561,7 +1615,8 @@ mark.rlog-search-mark-current {
     animation: rlog-theme-breathe 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* 主题切换过渡：只给大块结构元素保留 0.35s 颜色渐变，小元素瞬切（降低移动端渲染压力）。 */
+/* 交互态颜色过渡：大块结构元素保留 0.35s 渐变（如置顶行底色换档、hover 反馈），小元素瞬切。
+   主题切换不走这条：切换期间整块面板由 .rlog-theme-transitioning 统一禁用过渡（见下）。 */
 #rlog-panel,
 .rlog-panel-header,
 .rlog-record-header,
@@ -1571,6 +1626,16 @@ mark.rlog-search-mark-current {
 .rlog-dialog,
 .rlog-dialog-header {
     transition: background-color 0.35s ease, border-color 0.35s ease, color 0.35s ease, box-shadow 0.35s ease, background 0.35s ease;
+}
+
+/* 主题切换期间禁用面板内所有颜色过渡：主题色瞬切成最终色，切换反馈由缩放呼吸动画承担。
+   类由 JS 在切换前加、双 RAF 后移除（见 playThemeSwitchAnimation）。
+   注：伪元素（如偏好设置开关的 ::before/::after）自带过渡，`*` 选择器覆盖不到，必须单独列。 */
+.rlog-theme-transitioning,
+.rlog-theme-transitioning *,
+.rlog-theme-transitioning *::before,
+.rlog-theme-transitioning *::after {
+    transition: none !important;
 }
 
 /* ============================================================
@@ -1940,7 +2005,7 @@ mark.rlog-search-mark-current {
     top: 0;
     right: 0;
     bottom: 0;
-    width: 30px;          /* 触控区宽度，保证手指易于点中 */
+    width: 14px;          /* 触控区宽度（桌面端）：窄条，减少误触；移动端在下方媒体查询中放宽 */
     /* 低于消息标题栏（.rmsg-header z-index:10）：滚出屏幕的内容会从吸顶标题栏下方穿过，
        滚动条应被标题栏盖住 */
     z-index: 5;
@@ -2492,8 +2557,7 @@ mark.rlog-search-mark-current {
         font-size: 15px; /* 图标大小与桌面端同比例缩小 */
     }
     .rlog-panel-header {
-        padding: 8px 10px;
-        flex-wrap: wrap;
+        padding: 8px 6px 8px 10px; /* 右内边距收紧给按钮区腾宽度；左边距保持与记录内容对齐 */
         gap: 4px;
     }
     .rlog-panel-header h4 {
@@ -2510,21 +2574,18 @@ mark.rlog-search-mark-current {
     }
     .rlog-header-actions {
         --rlog-header-gap: 3px; /* 移动端按钮间距（抽屉与「更多」按钮随之一起变）；gap 继承基础规则 */
-        /* 移动端换行时右对齐：当 header flex-wrap: wrap 生效，抽屉展开使按钮区变宽放不下时，
-           按钮区整体换到第二行，margin-left: auto 将其向右推（与原来「更多」抽屉行为一致） */
-        margin-left: auto;
     }
     .rlog-header-btn {
-        font-size: 13px;
+        font-size: 12px;
         padding: 0;
-        width: 24px;
-        height: 24px;
+        width: 22px;
+        height: 22px;
     }
     #rlog-close-btn {
-        font-size: 16px;
+        font-size: 15px;
         padding: 0;
-        width: 24px;
-        height: 24px;
+        width: 22px;
+        height: 22px;
     }
     .rlog-record-info {
         gap: 4px;
@@ -2557,9 +2618,6 @@ mark.rlog-search-mark-current {
     }
 
     /* 移动端搜索框适配（按钮尺寸与外部操作按钮一致） */
-    .rlog-search-box {
-        gap: 0;
-    }
     /* 移动端搜索框从放大镜右缘（＝放大镜宽度）开始，向右扩展「折叠箭头宽度 + gap」以对齐箭头的右缘 */
     .rlog-record.rlog-searching .rlog-search-box {
         left: 20px;
@@ -2616,6 +2674,10 @@ mark.rlog-search-mark-current {
         padding: 4px 16px 14px 20px; /* 右侧留量为 overlay 滚动条让出间距 */
         max-height: 350px;
     }
+    /* 移动端触控区放宽：手指落点更容易；桌面端保持基础规则的窄条 */
+    .rlog-scroll-hitbox {
+        width: 22px;
+    }
     .rlog-resize-grip {
         width: 20px;
         height: 20px;
@@ -2624,24 +2686,12 @@ mark.rlog-search-mark-current {
         border-width: 0 0 10px 10px;
     }
 
-    /* 主题切换临时禁用过渡（仅移动端）：大量展开消息时数百元素同时渐变会卡顿；
-       JS 在切换前加类、双 RAF 后移除，桌面保留渐变 */
-    .rlog-theme-transitioning *,
-    .rlog-theme-transitioning {
-        transition: none !important;
-    }
-
-    /* 抽屉禁用过渡（仅移动端）：max-width 过渡会持续改变 header 的 flex 布局，
-       换行时导致数百个 sticky 消息标题逐帧重排；桌面保留滑出动画 */
+    /* 两抽屉在移动端的内部间距与按钮区同档（基础规则里是桌面档） */
     .rlog-more-drawer,
     .rlog-filter-drawer {
-        transition: none;
+        gap: 3px;
     }
-    /* 筛选抽屉移动端宽度不足时允许换行（不缩小字号），整行占用头部第二行 */
-    .rlog-filter-drawer {
-        flex-wrap: wrap;
-        white-space: normal;
-    }
+    /* 筛选抽屉展开态在移动端取用整行宽度（基础规则给的是 560px 上限）；放不下时内部折行 */
     .rlog-filter-drawer.expanded {
         max-width: 100%;
         flex: 1 1 auto;
@@ -2749,5 +2799,12 @@ mark.rlog-search-mark-current {
         height: 100vh !important;
         min-height: 100vh !important;
         max-height: 100vh !important;
+    }
+    /* 移动端全屏：标题栏固定两行 —— 标题（含计数/指示器）留在第一行，按钮区整块独占第二行并靠右；
+       抽屉不自动展开、仍由用户手动操作。（用按钮区占满一行，而不是给标题加满行宽：
+       否则展开抽屉时那条看不见的拖拽区会自己占掉一整行，标题栏会多出空行） */
+    #rlog-panel.rlog-mobile-fullscreen .rlog-header-actions {
+        flex-basis: 100%;
+        justify-content: flex-end; /* 独占一行后按钮仍靠右，与「抽屉向左延伸、按钮不动」的排布一致 */
     }
 }

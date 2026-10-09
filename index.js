@@ -22,11 +22,13 @@
    16. 记录删除与复制    单条删除、整条/单消息复制、复制反馈
    17. 查看全文覆盖层    覆盖层开合、格式切换、滚动、Esc 关闭
    18. 自定义滚动条      共享观察器、滚动条创建/更新/拖拽、滚动指示器
-   19. 面板控制          菜单入口、buildUI、开合/折叠(↔浮标)/主题按钮
-   20. 拖拽与缩放        面板拖动/右下角缩放/浮标拖动
-   21. 初始化            等待 ST 就绪并构建 UI
-   22. 对外 API          window.__RLogApi 面向 tour.js 的接口
-   23. 临时测试功能      烧瓶按钮与模拟注入（后续删除）
+   19. 正文卸载与按需恢复  视口外正文清空为等高占位、进入视野前按需补回（含滚动带维护）
+   20. 面板控制          菜单入口、buildUI、开合/折叠(↔浮标)/主题按钮
+   21. 拖拽与缩放        面板拖动/右下角缩放/浮标拖动
+   22. 初始化            等待 ST 就绪并构建 UI
+   23. 对外 API          window.__RLogApi 面向 tour.js 的接口
+   24. 临时测试功能      仅剩控制台调试函数（测试注入 / 超时模拟，后续删除）
+   25. 模拟提示词（不发请求） 真实组装 + 发前截断，生成一条模拟记录（不发送网络请求）
    ============================================================ */
 
 /* ── 动态加载 tour.js ─────────────────── */
@@ -72,6 +74,7 @@ const BADGE_DEFAULT_MARGIN_TOP = 12;  /* 浮标默认位置在 ST 顶部设置�
 const LONG_PRESS_MS = 550;            /* 长按判定阈值(ms)：按下超过此时间且移动未超过容差视为长按 */
 const LONG_PRESS_MOVE_TOLERANCE = 8;  /* 长按移动容差(px)：按下后位移超过该值取消长按 */
 const PIN_TOAST_DURATION_MS = 1800;   /* 置顶/取消置顶提示自动消失时间(ms) */
+const SIMULATE_TIMEOUT_MS = 15000;    /* 生成模拟记录全程兜底超时(ms)：到点停止组装链路、丢弃结果并提示失败 */
 const ST_THEME_DARK_LUMINANCE = 0.5;  /* ST 主题背景色相对感知亮度低于该值视为深色主题（浮标改用浅色一套） */
 
 /* ── 请求来源识别（证据分层判定，RQ-32）相关常量 ── */
@@ -178,6 +181,10 @@ const ENVELOPE_URL_SHAPE_RE = new RegExp(
    也不参与「响应落楼修正」） */
 const ENVELOPE_PROXY_SOURCE = { type: 'plugin', label: '插件', detail: '插件代理请求', rule: 'envelope' };
 
+/* RegExp: ST 自家真实生成端点（/api/backends/<api>/generate）。模拟预览期间用它硬拦请求，
+   确保「只组装、绝不发网络」 */
+const GENERATE_ENDPOINT_RE = /\/api\/backends\/[^/?#]+\/generate\b/i;
+
 /* number: 回复追踪超时（5 分钟）：超时未结束即停止追踪并标记 Timeout */
 const REPLY_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -196,6 +203,15 @@ const MAX_ERROR_BODY_BYTES = 8192;
 const SCROLLEND_FALLBACK_MS = 2000;
 /* 滚动条懒创建延时（ms）：内容区出现后延迟创建进度条，避免同步重排 */
 const SCROLLBAR_CREATE_DELAY_MS = 50;
+/* number: 进度条创建队列每帧最多处理几个内容区。滚动时同一帧会有多条长消息进入视口，
+   一次性全部创建（各含 4 个小 DOM 与若干监听）会造成掉帧；摊到连续几帧完成，创建条件与效果不变 */
+const SCROLLBAR_CREATE_PER_FRAME = 4;
+/* number: 轨道相对 hitbox 的上下内缩量(px)，供轨道高度与拖动坐标换算共用；
+   必须与 CSS 中 .rlog-scroll-track 的 top/bottom 保持一致 */
+const SCROLLBAR_TRACK_PADDING = 4;
+/* number: 「正文卸载与按需恢复」保留带宽（屏）：列表可视区上下各保留这么多屏的正文不卸载。
+   卸载掉的正文换成同一元素上的等高占位，面板关闭/重开时就不必为视口外的正文付排版与绘制。 */
+const BODY_KEEP_SCREENS = 1;
 /* 菜单按钮重排延时（ms）：确保在所有同步初始化的插件之后排在末尾 */
 const MENU_REORDER_DELAY_MS = 100;
 /* 初始化重试延时（ms）：ST 全局对象尚未就绪时的重试间隔 */
@@ -213,6 +229,17 @@ const TOKEN_TIER_BOUNDARIES = [200000, 128000, 64000, 32000, 16000, 8000, 4000];
 let eventSource = null;
 /* object|null: ST event_types */
 let event_types = null;
+
+/* boolean: 模拟预览进行中——窗口内的生成请求一律不发网络（目标那条先建档再阻断，见 simulateCaptureCtx）；
+   只在 captureSimulatedPrompt 内短暂置真，finally 必定复位 */
+let simulatePromptActive = false;
+
+/* boolean: 生成模拟记录流程进行中（含组装、还原、本地统计）——期间按钮置灰、不可重复触发 */
+let simulatePromptRunning = false;
+
+/* object|null: 本次模拟的捕获上下文（形状见 createSimulateCaptureCtx），只在一次模拟内存在。
+   跟着目标请求一路传进记录管线，供异步建档阶段判断归属；不靠回头读全局标志（那时可能已复位） */
+let simulateCaptureCtx = null;
 
 /* Array: 抓取到的记录列表 */
 let records = [];
@@ -438,8 +465,6 @@ let filterState = {
 let pendingFlashHeader = null;
 /* number|null: 置底闪烁兜底定时器（scrollend 未触发时兜底） */
 let pendingFlashTimer = null;
-/* number: 最近一次回顶闪烁触发时间戳（回复挂载重渲染打断时用于补闪） */
-let lastTopHintFlashAt = 0;
 /* HTMLElement|null: 折叠触发回顶的记录元素（展开同一条记录时才闪烁） */
 let recordCollapseToppedEl = null;
 
@@ -1648,6 +1673,23 @@ function installSourceTracking() {
         getSourceCorrectionStats: () => ({ ...sourceCorrectionStats }),
         /* 当前待修正记录数（响应已定稿、等待落楼匹配） */
         getPendingCorrectionCount: () => pendingSourceCorrections.size,
+        /* 正文卸载/恢复统计（只读）：loaded/unloaded 为列表内当前状态，passes/lastPassMs 为带宽维护计数 */
+        getBodyUnloadStats: () => {
+            const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+            let loaded = 0;
+            if (listEl) {
+                listEl.querySelectorAll('.rmsg-content').forEach((contentEl) => {
+                    if (!unloadedBodies.has(contentEl)) loaded++;
+                });
+            }
+            return {
+                loaded,
+                unloaded: unloadedBodies.size,
+                passes: bodyUnloadStats.passes,
+                lastPassMs: Math.round(bodyUnloadStats.lastPassMs * 10) / 10,
+                restoreAllCount: bodyUnloadStats.restoreAllCount,
+            };
+        },
     };
 
     console.debug(`[${PLUGIN_KEY}] 请求来源识别已启用（证据分层判定 + 原生入口监听保底）。调试接口: window.__rlogDebug`);
@@ -1829,25 +1871,51 @@ function redactSensitiveBody(body) {
 /* 后台异步处理已捕获的请求体（解析消息、算 token、存记录），与请求发送解耦、不阻塞网络
    @param {object} body @param {string} requestUrl @param {number|null} captureId
    @param {boolean} [viaProxyEnvelope=false] 是否由信封解包得到（来源强制标「插件」）
-   @param {object|null} [requestContext=null] 来源判定上下文（RQ-32：原始文本 / 请求体对象 / 是否顶层 / 信号对象） */
-async function processCapturedBody(body, requestUrl, captureId, viaProxyEnvelope = false, requestContext = null) {
-    if (!body || !isAiRequestBody(body, requestUrl)) return;
+   @param {object|null} [requestContext=null] 来源判定上下文（RQ-32：原始文本 / 请求体对象 / 是否顶层 / 信号对象）
+   @param {object|null} [simulateCtx=null] 本次模拟的捕获上下文（非空即「这条是模拟捕获」；来源固定为模拟、不参与来源判定） */
+async function processCapturedBody(body, requestUrl, captureId, viaProxyEnvelope = false, requestContext = null, simulateCtx = null) {
+    const isSimulated = !!simulateCtx;
+    if (!body || !isAiRequestBody(body, requestUrl)) {
+        if (isSimulated) simulateCtx.settle(null);
+        return;
+    }
 
     const messages = parseFetchRequestBody(body);
-    if (!messages) return;
+    if (!messages) {
+        if (isSimulated) simulateCtx.settle(null);
+        return;
+    }
 
     const characterName = getCurrentCharacterName();
-    /* E3 候选计数（本轮候选写请求，两条及以上即作废位置证据）：一条请求只计一次 */
-    notePassWriteCandidate();
-    /* 信封解包命中（判定序 0，唯一可前置终止的排除项）：来源固定为「插件」，不做证据分层判定 */
-    const source = viaProxyEnvelope
-        ? noteSourceDecision(ENVELOPE_PROXY_SOURCE, '信封解包命中（RQ-31，判定终局）')
-        : decideRequestSource(body, requestUrl, requestContext);
-    const modelName = extractModelName(body);
+    /* E3 候选计数（本轮候选写请求，两条及以上即作废位置证据）：一条请求只计一次；模拟捕获不计入 */
+    if (!isSimulated) notePassWriteCandidate();
+    /* 信封解包命中（判定序 0，唯一可前置终止的排除项）：来源固定为「插件」，不做证据分层判定；
+       模拟捕获固定用模拟来源，同样不做判定 */
+    const source = isSimulated
+        ? { ...SIMULATED_PROMPT_SOURCE }
+        : (viaProxyEnvelope
+            ? noteSourceDecision(ENVELOPE_PROXY_SOURCE, '信封解包命中（RQ-31，判定终局）')
+            : decideRequestSource(body, requestUrl, requestContext));
+    let modelName = extractModelName(body);
+    /* 模拟记录的模型名回退：请求体里取不到时用 ST 当前模型名 */
+    if (isSimulated && modelName === '未知模型') modelName = getStChatCompletionModelName() || modelName;
+    /* 模拟已判失败（超时）就不再建档：分词前后各查一次，避免白算 */
+    if (isSimulated && simulateCtx.canceled) {
+        simulateCtx.settle(null);
+        return;
+    }
     /* 用 ST 原生分词器精确计算 token（modelName 用于判断分词器是否兼容） */
     await computeTokensForMessages(messages, modelName);
+    /* 分词期间也可能超时：同样不建档 */
+    if (isSimulated && simulateCtx.canceled) {
+        simulateCtx.settle(null);
+        return;
+    }
     /* captureId 用于把该请求的回复精确挂回这条记录；rawBody 入库前先遮蔽敏感字段 */
-    addRecord(characterName, messages, source, modelName, redactSensitiveBody(body), captureId);
+    const record = addRecord(characterName, messages, source, modelName, redactSensitiveBody(body), captureId,
+        { simulated: isSimulated });
+    /* 模拟捕获：兑现「记录已建好」的完成信号；没建成记录兑现空值，模拟流程按失败处理 */
+    if (isSimulated) simulateCtx.settle(record || null);
 }
 
 /* 判断 fetch 输入是否为 Request 对象。
@@ -1868,13 +1936,26 @@ function createFetchHook(realmWindow, getOriginalFetch) {
     return async function hookedFetch(input, init) {
         const originalFetch = getOriginalFetch();
 
-        /* ── 快速通道 0：重入保护 ── */
-        if (realmHookInFlight) {
+        /* ── 模拟预览 ──
+           发前通知一到就「武装」的目标请求即本次模拟那条：继续往下走、按正常记录管线建档，
+           最后不交给原始 fetch（见下方 fetchPromise）；窗口内没被认领的生成请求仍旧只拦不记 */
+        const simulateWindowHit = simulatePromptActive && GENERATE_ENDPOINT_RE.test(getFetchRequestUrl(input));
+        /* 目标请求只可能由主窗口发出（ST 自己的发送链路）：iframe 内的生成请求只拦不认领 */
+        const simulateCapture = (simulateWindowHit && simulateCaptureCtx && simulateCaptureCtx.armed && realmWindow === window)
+            ? simulateCaptureCtx
+            : null;
+        if (simulateCapture) simulateCapture.armed = false; /* 只认领这一条 */
+        if (simulateWindowHit && !simulateCapture) {
+            return Promise.reject(new DOMException('Simulate mode: generation request blocked', 'AbortError'));
+        }
+
+        /* ── 快速通道 0：重入保护（模拟捕获这条要建档，不受此限） ── */
+        if (realmHookInFlight && !simulateCapture) {
             return originalFetch.apply(realmWindow, [input, init]);
         }
 
-        /* ── 快速通道 1：总开关关闭时直接透传，不解析 body ── */
-        if (!masterEnabled) {
+        /* ── 快速通道 1：总开关关闭时直接透传，不解析 body（模拟捕获这条不受此限） ── */
+        if (!masterEnabled && !simulateCapture) {
             return originalFetch.apply(realmWindow, [input, init]);
         }
 
@@ -1883,7 +1964,7 @@ function createFetchHook(realmWindow, getOriginalFetch) {
         if (isRequestLike(input) && method === 'GET') {
             try { method = input.method.toUpperCase(); } catch (e) { /* ignore */ }
         }
-        if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+        if (!simulateCapture && method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
             return originalFetch.apply(realmWindow, [input, init]);
         }
 
@@ -1893,7 +1974,7 @@ function createFetchHook(realmWindow, getOriginalFetch) {
         const requestUrl = getFetchRequestUrl(input);
         const outerFastPath = isOuterFastPathUrl(requestUrl);
         const shapeText = (init && typeof init.body === 'string') ? init.body : null;
-        if (outerFastPath && (!shapeText || !ENVELOPE_URL_SHAPE_RE.test(shapeText))) {
+        if (!simulateCapture && outerFastPath && (!shapeText || !ENVELOPE_URL_SHAPE_RE.test(shapeText))) {
             return originalFetch.apply(realmWindow, [input, init]);
         }
         /* 回复追踪的闸门地址：外层地址被快速通道跳过时，用预筛命中的内层候选地址
@@ -1950,15 +2031,19 @@ function createFetchHook(realmWindow, getOriginalFetch) {
            故不存在「判定晚于流式处理器销毁」的时序窗口。 */
         const requestContext = buildFetchRequestContext(realmWindow, input, init, method);
 
-        /* ── 调用原始 fetch（锁外；经闭包引用调用，避免经 window.fetch 递归） ── */
-        const fetchPromise = originalFetch.apply(realmWindow, [input, init]);
+        /* ── 调用原始 fetch（锁外；经闭包引用调用，避免经 window.fetch 递归）──
+           模拟捕获这条例外：记录跑完就返回「已中止」，不把请求交出去 */
+        const fetchPromise = simulateCapture
+            ? Promise.reject(new DOMException('Simulate mode: generation request blocked', 'AbortError'))
+            : originalFetch.apply(realmWindow, [input, init]);
 
         /* ── 后台异步处理 body（不阻塞 fetch 返回） ── */
         if (syncBody || rawText || asyncBodyPromise) {
-            /* 本次请求捕获编号：回复挂载、待办区清理都依赖它 */
-            const captureId = ++captureSeq;
-            /* 在返回给调用方的同一个 fetchPromise 上挂回复追踪（精确对应，乱序/并发不串） */
-            captureResponseForRequest(fetchPromise, replyGateUrl, captureId);
+            /* 本次请求捕获编号：回复挂载、待办区清理都依赖它；模拟捕获这条不发网络，没有回复可追 */
+            const captureId = simulateCapture ? null : ++captureSeq;
+            /* 在返回给调用方的同一个 fetchPromise 上挂回复追踪（精确对应，乱序/并发不串）；
+               模拟捕获这条没有回复可追 */
+            if (captureId != null) captureResponseForRequest(fetchPromise, replyGateUrl, captureId);
             /* 统一判定（外层优先、外层不通过才尝试信封解包），命中即用生效地址与生效请求体建档；
                getBody 惰性求值，被快速通道跳过时不重复解析外层 body */
             const handleBody = (getBody) => {
@@ -1969,9 +2054,13 @@ function createFetchHook(realmWindow, getOriginalFetch) {
                     context: requestContext,
                     getBody,
                 });
-                if (!decision) return null;
+                if (!decision) {
+                    /* 模拟捕获这条没过请求体判定：不建档，也别让模拟流程一直等 */
+                    if (simulateCapture) simulateCapture.settle(null);
+                    return null;
+                }
                 return processCapturedBody(decision.effectiveBody, decision.effectiveUrl, captureId,
-                    decision.viaProxyEnvelope, decision.context);
+                    decision.viaProxyEnvelope, decision.context, simulateCapture);
             };
             if (syncBody || rawText) {
                 /* 同步捕获的 body / 原始文本：解析与判定放到请求发出之后的异步阶段 */
@@ -1989,8 +2078,8 @@ function createFetchHook(realmWindow, getOriginalFetch) {
 }
 
 /* 安装主窗口请求拦截（fetch + XHR）：两套包装都始终安装，内部由 masterEnabled 决定是否记录。
-   由于本插件 loading_order 为 999，安装时其他插件的包装链已就绪，
-   originalFetch / 原 XHR 原型方法捕获到的都是完整的下游调用链。 */
+   本插件的包装在 buildUI（APP_READY / 延迟兜底）时才装上，因此比「脚本执行期就装好」的包装更靠外；
+   originalFetch / 原 XHR 原型方法捕获到的，是当时已经就绪的那条下游调用链。 */
 function installRequestHooks() {
     if (currentHook) return; /* 已安装 */
 
@@ -2332,9 +2421,17 @@ function getReplyTimeoutMs() {
    @param {string} status 'succeed' | 'fail' | 'timeout'
    @returns {string} */
 function getReplyStatusLabel(status) {
+    if (status === 'simulated') return 'Simulated';
     if (status === 'fail') return 'Fail';
     if (status === 'timeout') return 'Timeout';
     return 'Succeed';
+}
+
+/* 取记录标题栏「状态标签」的状态值：模拟记录固定在 simulated，其余取真实回复状态
+   @param {object} record @returns {string|null} */
+function getRecordStatus(record) {
+    if (record && record.simulated) return 'simulated';
+    return (record && record.reply && record.reply.status) || null;
 }
 
 /* 回复状态标签槽位宽度（px）缓存：由 getReplyStatusMaxWidth 实测一次，供占位/标签共用 */
@@ -2373,6 +2470,7 @@ function getReplyStatusMaxWidth() {
 /* 状态标记悬停提示：只显示动态原因 + 终态时间（状态字样标签上已有）；成功统一显示 Succeed
    @param {object} record @returns {string} */
 function getReplyStatusTitle(record) {
+    if (record && record.simulated) return `Simulated · ${record.timestamp || ''}`;
     const reply = record && record.reply;
     if (!reply) return '';
     let reason;
@@ -2822,8 +2920,10 @@ function appendReplyToRecordDom(record) {
     /* 回复子消息被角色筛选隐藏时不追加子消息 DOM（数据已写入 record.reply，
        恢复显示后由下次渲染自然带出）；标题栏状态标记仍照常更新 */
     if (isMessageVisible(record.reply)) {
-        /* 幂等：已追加过则跳过（避免重复触发时插两条） */
-        if (!bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`)) {
+        /* 幂等：已追加过则跳过（避免重复触发时插两条）；
+           折叠记录的正文还没生成，此时不追加子消息 DOM（回复数据已在 record.reply 里，
+           下次展开由 ensureRecordBody() 一并带出），只更新标题栏状态标记 */
+        if (bodyEl.dataset.bodyBuilt === '1' && !bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`)) {
             bodyEl.insertAdjacentHTML('beforeend', buildMessageHtml(record.reply, idx, replyMsgIdx));
             const replyItemEl = bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`);
             if (replyItemEl) bindMsgItemEvents(replyItemEl);
@@ -2896,7 +2996,7 @@ function pruneNormalRecords() {
     }
 }
 
-function addRecord(characterName, messages, source, modelName, rawBody, captureId) {
+function addRecord(characterName, messages, source, modelName, rawBody, captureId, options = {}) {
     if (!masterEnabled) return;
     if (!characterName || !messages || messages.length === 0) return;
 
@@ -2930,6 +3030,9 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
         reply: null,                 /* 回复内容（独立存储，不计入请求消息/查看全文） */
     };
 
+    /* 模拟记录：没有真实回复，直接在标题栏标一个 simulated 状态标签 */
+    if (options.simulated) record.simulated = true;
+
     /* 回复可能先于记录建成而到达（finalize 时记录尚未创建）：仅当回复已终态时才立即挂载，
        并交给 addRecord 后续的渲染路径展示（skipRender=true 避免重复渲染）；
        仍在途的条目保留在待办区，由 finalizeReply 稍后挂载 */
@@ -2946,7 +3049,7 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
             const evicted = tourPendingRecords.pop();
             if (evicted && evicted.id != null) abortPendingReply(evicted.id);
         }
-        return;
+        return record;
     }
 
     /* 筛选生效时先判断新记录是否可见：
@@ -2990,6 +3093,9 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
     if (!(panelEl && isPanelVisible && !isPanelCollapsed) && (!filterActive || newRecordVisible)) {
         pendingScrollToTop = true;
     }
+
+    /* 返回记录对象：模拟捕获要在建档当刻兑现完成信号；跳过建档（去重 / 总开关等）时返回 undefined */
+    return record;
 }
 
 function clearAllRecords() {
@@ -3199,7 +3305,11 @@ function isMobileFullActive() {
    切换偏好、打开面板、初始化时各调用一次，保证面板窗口位置/尺寸始终与偏好一致。 */
 function updateMobileFullscreenClass() {
     if (!panelEl) return;
-    panelEl.classList.toggle('rlog-mobile-fullscreen', isMobileFullActive());
+    const active = isMobileFullActive();
+    const changed = panelEl.classList.contains('rlog-mobile-fullscreen') !== active;
+    panelEl.classList.toggle('rlog-mobile-fullscreen', active);
+    /* 面板尺寸变了 → 正文换行宽度可能变化：跑一次带宽维护（宽度一旦变化它会先全量恢复再重新卸载） */
+    if (changed) scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
 }
 
 /* 应用/撤销「极简模式」：把 .rlog-minimal 类加到影子宿主（而非面板）上，
@@ -3553,16 +3663,7 @@ function resetSearchIfActive() {
     /* 清除所有高亮标记 */
     if (searchState) {
         const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
-        if (listEl) {
-            listEl.querySelectorAll('mark.rlog-search-mark, mark.rlog-search-mark-current').forEach(mark => {
-                const parent = mark.parentNode;
-                if (parent) {
-                    parent.replaceChild(document.createTextNode(mark.textContent), mark);
-                    /* 合并相邻文本节点，避免产生多余节点 */
-                    parent.normalize();
-                }
-            });
-        }
+        if (listEl) restoreSearchHighlights(listEl);
 
         const searchEl = searchState.searchEl;
         if (searchEl && searchEl.parentNode) {
@@ -3581,6 +3682,9 @@ function resetSearchIfActive() {
 
         searchState = null;
     }
+
+    /* 搜索框被移除时若仍处于聚焦态，blur 不保证触发：兜底解除面板高度冻结 */
+    unfreezePanelForSearchKeyboard();
 }
 
 /* Set<string>: \s 等价的空白字符集合（避免循环内逐字符正则开销） */
@@ -3623,31 +3727,57 @@ function findMatchesInRecord(recordIndex, keyword) {
     const normalizedKeyword = keyword.replace(/\s+/g, ' ').trim();
     if (!normalizedKeyword) return [];
     const lowerKeyword = normalizedKeyword.toLowerCase();
+    /* 关键词不含空白字符时（绝大多数搜索）归一化不会改变匹配结果——归一化只折叠空白、
+       不改动非空白字符的相对顺序，故可直接在「页面实际文字」上扫描，
+       省掉每条消息的归一化文本与索引映射构造（长记录下这一项可达十几毫秒/次输入） */
+    const plainScan = normalizedKeyword.indexOf(' ') === -1;
 
     const matches = [];
 
     record.messages.forEach((msg, msgIdx) => {
         /* 角色筛选隐藏的子消息不参与搜索：内容不在 DOM 中，导航高亮无法定位 */
         if (!isMessageVisible(msg)) return;
-        addContentMatches(msg.content, msgIdx, normalizedKeyword, lowerKeyword, matches);
+        addContentMatches(msg.content, msgIdx, normalizedKeyword, lowerKeyword, matches, plainScan);
     });
     /* 回复作为最后一条伪消息参与搜索（msgIdx = messages.length） */
     if (record.reply && isMessageVisible(record.reply)) {
-        addContentMatches(record.reply.content, record.messages.length, normalizedKeyword, lowerKeyword, matches);
+        addContentMatches(record.reply.content, record.messages.length, normalizedKeyword, lowerKeyword, matches, plainScan);
     }
 
     return matches;
 }
 
-/* 在单条消息/回复内容中收集关键词匹配（归一化偏移映射，兼容 CRLF）
+/* 把消息原文换算成「页面显示文字」：渲染走 <pre>，解析器会做两件事，这里逐条对齐
+   （任一项漏掉，关键词落点就会整体漂移）——① \r\n / \r → \n；② 丢弃 NUL。
+   开头第一个换行由 buildMessageHtml 在 <pre> 后垫一个换行抵消，此处不再处理。
+   @param {string} content @returns {string} */
+function toRenderedText(content) {
+    return content.replace(/\r\n?/g, '\n').replace(/\u0000/g, '');
+}
+
+/* 在单条消息/回复内容中收集关键词匹配（偏移基于 toRenderedText，与页面文字同源）
    @param {string} content @param {number} msgIdx @param {string} normalizedKeyword
-   @param {string} lowerKeyword @param {Array} matches */
-function addContentMatches(content, msgIdx, normalizedKeyword, lowerKeyword, matches) {
+   @param {string} lowerKeyword @param {Array} matches
+   @param {boolean} [plainScan=false] 关键词不含空白时走快速路径：不建归一化文本与索引映射 */
+function addContentMatches(content, msgIdx, normalizedKeyword, lowerKeyword, matches, plainScan = false) {
     if (typeof content !== 'string' || !content) return;
-    /* 与 DOM 渲染保持一致：浏览器解析 innerHTML 时会把 \r\n / \r 规范化为 \n，
-       这里先做同样的换行规范化，匹配偏移才能直接用于 DOM 高亮（否则会逐步漂移） */
-    const normalizedContent = content.replace(/\r\n?/g, '\n');
-    const { normalized, map } = normalizeTextWithMap(normalizedContent);
+
+    if (plainScan) {
+        const rendered = toRenderedText(content);
+        const lowerContent = rendered.toLowerCase();
+        let pos = 0;
+        let count = 0;
+        while (pos <= lowerContent.length && count < 5000) {
+            const idx = lowerContent.indexOf(lowerKeyword, pos);
+            if (idx === -1) break;
+            matches.push({ msgIdx, start: idx, end: idx + normalizedKeyword.length });
+            pos = idx + normalizedKeyword.length;
+            count++;
+        }
+        return;
+    }
+
+    const { normalized, map } = normalizeTextWithMap(toRenderedText(content));
     const lowerContent = normalized.toLowerCase();
 
     let pos = 0;
@@ -3660,7 +3790,7 @@ function addContentMatches(content, msgIdx, normalizedKeyword, lowerKeyword, mat
     while (pos <= normalized.length && count < 5000) {
         const idx = lowerContent.indexOf(lowerKeyword, pos);
         if (idx === -1) break;
-        /* 将归一化内容中的匹配偏移映射回原始内容偏移 */
+        /* 把归一化文本里的匹配偏移还原为页面文字偏移（可直接用于高亮） */
         const origStart = map[idx];
         const normEnd = idx + normalizedKeyword.length;
         const origEnd = map[normEnd - 1] + 1;
@@ -3670,17 +3800,29 @@ function addContentMatches(content, msgIdx, normalizedKeyword, lowerKeyword, mat
     }
 }
 
-/* 清除所有搜索高亮 <mark>（普通黄色匹配 + 当前橙色命中），恢复原始文本节点 */
+/* 把当前所有搜索高亮还原为纯文本：只对「确实含 mark 的消息」整体重设一次 textContent。
+   逐个拆 mark（replaceChild + normalize）在命中多时很贵（实测 2000 处约 478ms、10460 处约 20.7s），
+   整体重设等价且是每消息一次赋值；文本基准与高亮共用 toRenderedText，与页面文字逐字一致。
+   @param {HTMLElement} listEl */
+function restoreSearchHighlights(listEl) {
+    if (!listEl) return;
+    const markedItems = new Set();
+    listEl.querySelectorAll('mark.rlog-search-mark, mark.rlog-search-mark-current').forEach((mark) => {
+        const item = mark.closest('.rmsg-item');
+        if (item) markedItems.add(item);
+    });
+    markedItems.forEach((item) => {
+        const msg = getMessageByIndex(records[Number(item.dataset.record)], Number(item.dataset.msg));
+        const contentEl = item.querySelector('.rmsg-content');
+        if (msg && contentEl) contentEl.textContent = toRenderedText(msg.content);
+    });
+}
+
+/* 清除所有搜索高亮 <mark>（普通黄色匹配 + 当前橙色命中），恢复纯文本内容区 */
 function clearSearchHighlights() {
     const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
     if (!listEl) return;
-    listEl.querySelectorAll('mark.rlog-search-mark, mark.rlog-search-mark-current').forEach(mark => {
-        const parent = mark.parentNode;
-        if (parent) {
-            parent.replaceChild(document.createTextNode(mark.textContent), mark);
-            parent.normalize();
-        }
-    });
+    restoreSearchHighlights(listEl);
 }
 
 /* 把当前命中的橙色高亮降级为黄色（只换类名、不删 mark），供导航复用已绘制的高亮避免全量重绘；
@@ -3763,13 +3905,18 @@ function highlightRange(contentEl, start, end, className = 'rlog-search-mark-cur
     return mark;
 }
 
-/* 高亮本条记录内所有匹配（黄色，不含当前命中——它由 applyCurrentMatch 画橙色）；
-   同一消息内按 start 降序处理，避免先插入的 mark 影响后续偏移
+/* 高亮本条记录内所有匹配（黄色，不含当前命中——它由 applyCurrentMatch 画橙色）。
+   每条消息一次性构造「文本节点 + <mark>」片段并整体替换内容区子节点：
+   逐处 Range.surroundContents 是在同一文本块里反复切开，代价随该块内命中数超线性增长
+   （实测单块 420 处时最后 60 处比最初 60 处贵十几倍），而一次性构造是线性的、
+   产出 DOM 与逐处包裹等价（同样的 mark 类名与 data-match-idx，文字用 textContent 写入无需转义）。
    @param {HTMLElement} recordEl @param {number} recordIndex */
 function highlightAllMatches(recordEl, recordIndex) {
     if (!searchState || !recordEl) return;
     const record = records[recordIndex];
     if (!record) return;
+    /* 折叠记录的正文还未生成，高亮落点要在补建后的子树里找 */
+    ensureRecordBody(recordEl);
 
     /* 按消息分组（跳过当前命中，橙色单独绘制），并保留匹配在 matches 中的下标供 mark 记录 */
     const matchesByMsg = new Map();
@@ -3791,16 +3938,32 @@ function highlightAllMatches(recordEl, recordIndex) {
                 msgItem.classList.remove('collapsed');
             }
         }
-        const contentEl = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"] .rmsg-content`);
+        const contentEl = ensureMessageContent(recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"]`));
         if (!contentEl) return;
 
-        /* 同一消息内按 start 降序处理，避免 mark 插入影响后续偏移 */
-        msgMatches.sort((a, b) => b.match.start - a.match.start);
-        msgMatches.forEach(({ match, idx }) => {
-            const markEl = highlightRange(contentEl, match.start, match.end, 'rlog-search-mark');
+        /* 同一消息内按 start 升序拼片段：文本节点与 mark 元素交替，末尾补剩余文本 */
+        const text = toRenderedText(msg.content);
+        const sorted = msgMatches.slice().sort((a, b) => a.match.start - b.match.start);
+        const fragment = document.createDocumentFragment();
+        let cursor = 0;
+        sorted.forEach(({ match, idx }) => {
+            if (match.start > cursor) {
+                fragment.appendChild(document.createTextNode(text.slice(cursor, match.start)));
+            }
+            const markEl = document.createElement('mark');
+            markEl.className = 'rlog-search-mark';
             /* 记录匹配下标，供 removeYellowMarkByMatchIdx 定位黄色 mark */
-            if (markEl) markEl.dataset.matchIdx = String(idx);
+            markEl.dataset.matchIdx = String(idx);
+            markEl.textContent = text.slice(match.start, match.end);
+            fragment.appendChild(markEl);
+            cursor = match.end;
         });
+        if (cursor < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        }
+        contentEl.replaceChildren(fragment);
+        /* 文字与高度都没变，但内容区被整体替换过，顺手刷一次该消息的滚动条拇指（无进度条时为空操作） */
+        requestThumbUpdate(contentEl);
     });
 }
 
@@ -3823,11 +3986,15 @@ function scrollToMatch(markEl, contentEl) {
     const contentScrollTop = contentEl.scrollTop;
     const relativeTop = markRect.top - contentRect.top + contentScrollTop;
     const targetScroll = relativeTop - contentRect.height * 0.25;
-    const clampedContentScroll = Math.max(0, targetScroll);
+    /* 上下都要夹到内容区真实可滚范围：命中靠近长消息末尾时浏览器会把下面的超界值夹回
+       maxScroll，若这里不先夹，下面按 delta 推算的「命中最终位置」就会偏大，
+       外层列表据此定位会把命中留在偏下的位置（实测最多偏数百像素） */
+    const maxContentScroll = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
+    const clampedContentScroll = Math.max(0, Math.min(targetScroll, maxContentScroll));
     contentEl.scrollTo({ top: clampedContentScroll, behavior: getScrollBehavior() });
 
     /* 外层列表滚动手动定位：内层滚动尚未完成，但 mark 的最终视觉位置可由滚动增量推算
-       （markRect.top - delta），期望它落在所有 sticky 标题栏下方 8px 处 */
+       （markRect.top - delta），期望它落在两级吸顶标题栏下方、剩余可视区约 1/3 处 */
     const delta = clampedContentScroll - contentScrollTop;
     const markFinalTop = markRect.top - delta;
     const listRect = listEl.getBoundingClientRect();
@@ -3854,7 +4021,13 @@ function scrollToMatch(markEl, contentEl) {
 
     /* 夹到合法滚动范围（避免浏览器静默夹取导致意外跳变） */
     const maxListScroll = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
-    const clampedListScroll = Math.max(0, Math.min(targetListScroll, maxListScroll));
+    /* 下界：记录顶边在列表里的逻辑位置。低于它，记录顶边会露到列表上方、标题栏随之从吸顶位置
+       掉下来；命中位置不足以满足标准落点时优先保证记录标题栏不动，允许高亮停在更靠下的位置 */
+    const recordTopInList = recordEl
+        ? listEl.scrollTop + recordEl.getBoundingClientRect().top - listRect.top
+        : 0;
+    const minListScroll = Math.max(0, Math.min(recordTopInList, maxListScroll));
+    const clampedListScroll = Math.max(minListScroll, Math.min(targetListScroll, maxListScroll));
 
     /* 仅在需要调整时滚动外层（mark 已可见时保持不动，避免触发任何外部滚动） */
     if (Math.abs(clampedListScroll - listEl.scrollTop) > 1) {
@@ -3871,6 +4044,9 @@ function updateSearchCounter() {
     const total = searchState.matches.length;
     const current = total > 0 ? searchState.currentIdx + 1 : 0;
     counter.textContent = `${current}/${total}`;
+
+    /* 有关键词但无命中：计数转红 */
+    counter.classList.toggle('rlog-search-count-empty', !!searchState.keyword && total === 0);
 
     /* 无结果或仅一个结果时禁用上下箭头 */
     const prevBtn = searchState.searchEl.querySelector('.rlog-search-prev');
@@ -3921,7 +4097,8 @@ function applyCurrentMatch(msgIdx, matchIdx, redrawYellowHighlights = true) {
         }
     }
 
-    /* 折叠消息内容不可见、无法定位，先展开 */
+    /* 折叠记录 / 折叠消息的内容都不可见、无法定位，先按需补建再展开 */
+    ensureRecordBody(recordEl);
     if (msg.collapsed) {
         msg.collapsed = false;
         const msgItem = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"]`);
@@ -3931,7 +4108,7 @@ function applyCurrentMatch(msgIdx, matchIdx, redrawYellowHighlights = true) {
         }
     }
 
-    const contentEl = recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"] .rmsg-content`);
+    const contentEl = ensureMessageContent(recordEl.querySelector(`.rmsg-item[data-msg="${msgIdx}"]`));
     if (!contentEl) return;
 
     /* 异步创建滚动条（消息刚展开，需要等布局稳定） */
@@ -4027,6 +4204,7 @@ function openSearchForRecord(recordIndex) {
         record.collapsed = false;
         recordEl.classList.add('expanded');
         recordEl.classList.remove('collapsed');
+        ensureRecordBody(recordEl);
         /* 展开后为消息内容区懒创建进度条（仅视口内立即创建，其余延迟） */
         queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
     }
@@ -4065,6 +4243,11 @@ function openSearchForRecord(recordIndex) {
     const input = searchBox.querySelector('.rlog-search-input');
     const prevBtn = searchBox.querySelector('.rlog-search-prev');
     const nextBtn = searchBox.querySelector('.rlog-search-next');
+
+    /* 移动端：聚焦期间冻结面板高度，避免虚拟键盘顶起/收起时面板跟着变高变矮引发卡顿
+       （只钉高度、不改其它尺寸来源；失焦即还原并补跑一次视口同步） */
+    input.addEventListener('focus', () => freezePanelForSearchKeyboard(input));
+    input.addEventListener('blur', () => unfreezePanelForSearchKeyboard());
 
     /* boolean: 输入法组合状态标志（拼音未上屏时 input 事件不触发搜索） */
     let isComposing = false;
@@ -4257,14 +4440,15 @@ const FILTER_MODEL_SVG = {
     deepseek: 'M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45',
 };
 
-/* 更新标题旁「N隐藏」指示器（只显示被筛选隐藏的记录数）与筛选按钮激活圆点 */
-function updateFilterIndicator() {
+/* 更新标题旁「N隐藏」指示器（只显示被筛选隐藏的记录数）与筛选按钮激活圆点
+   @param {Array} [visibleRecords] 已算好的可见记录（renderPanelContent 已算过一份，传进来避免重复遍历） */
+function updateFilterIndicator(visibleRecords) {
     if (!panelEl) return;
     const active = isFilterActive();
     const indicator = panelEl.querySelector('#rlog-filter-indicator');
     if (indicator) {
         /* 只展示因筛选被隐藏的记录数；没有隐藏时隐藏指示器，只留按钮圆点 */
-        const hiddenCount = records.length - getVisibleRecords().length;
+        const hiddenCount = records.length - (visibleRecords || getVisibleRecords()).length;
         const showText = active && hiddenCount > 0;
         indicator.hidden = !showText;
         if (showText) {
@@ -4373,6 +4557,10 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
     const previewHtml = showPreview
         ? `<span class="rmsg-preview-text" title="${escapeHtml(msg.content.slice(0, 200))}">${escapeHtml(getContentPreview(msg.content))}</span>`
         : '';
+    /* 折叠消息不生成正文：正文要留到展开时由 ensureMessageContent() 补建，否则每次整表重建
+       都要把全部记录（含折叠部分）的提示词正文重新拼串并解析一遍。
+       <pre> 后垫一个换行：解析器吞掉的是它，正文（含开头空行）原样显示 */
+    const contentHtml = msg.collapsed ? '' : `<pre class="rmsg-content">\n${escapeHtml(msg.content)}</pre>`;
     return `
         <div class="rmsg-item ${collapsedClass} ${roleClass}" data-record="${recordIdx}" data-msg="${msgIdx}">
             <div class="rmsg-header">
@@ -4384,9 +4572,67 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
                     <i class="fa-solid fa-copy"></i>
                 </button>
             </div>
-            <pre class="rmsg-content">${escapeHtml(msg.content)}</pre>
+            ${contentHtml}
         </div>
     `;
+}
+
+/* 记录正文（可见子消息 + 回复）的 HTML 拼装：整表渲染与折叠记录的按需补建共用。
+   角色筛选按子消息逐条过滤：只拼可见子消息，data-msg 仍写真实索引；
+   回复作为最后一条伪消息（data-msg = messages.length），与其他子消息同形态。
+   @param {object} rec @param {number} idx @returns {string} */
+function buildRecordMessagesHtml(rec, idx) {
+    return rec.messages
+        .map((msg, mIdx) => ({ msg, mIdx }))
+        .filter(({ msg }) => isMessageVisible(msg))
+        .map(({ msg, mIdx }) => buildMessageHtml(msg, idx, mIdx))
+        .join('')
+        + (rec.reply && isMessageVisible(rec.reply)
+            ? buildMessageHtml(rec.reply, idx, rec.messages.length)
+            : '');
+}
+
+/* 折叠记录只出标题栏，正文（子消息标题 + 正文）留到展开时按需补建；已建过的直接复用。
+   凡需要正文 DOM 的路径（展开记录、搜索与高亮、展开/折叠所有消息、快速置底）都要先过这里。
+   离屏卸载过的记录：元素与标题栏都还在，只有正文文字被清空，此时按 needText 决定是否先补回来——
+   只要元素与几何的路径（折叠本条所有消息、快速置底）传 false，避免白建整条正文。
+   @param {HTMLElement} recordEl @param {boolean} [needText=true] @returns {HTMLElement|null} */
+function ensureRecordBody(recordEl, needText = true) {
+    if (!recordEl) return null;
+    const bodyEl = recordEl.querySelector('.rlog-record-body');
+    if (!bodyEl) return null;
+    if (bodyEl.dataset.bodyBuilt !== '1') {
+        const idx = Number(recordEl.dataset.recordIndex);
+        const rec = records[idx];
+        if (!rec) return bodyEl;
+        bodyEl.innerHTML = buildRecordMessagesHtml(rec, idx);
+        bodyEl.dataset.bodyBuilt = '1';
+        bodyEl.querySelectorAll('.rmsg-item').forEach(bindMsgItemEvents);
+    }
+    /* 记录正文已建过、但其中有些消息正文被离屏卸载：本路径要读正文就先补回来 */
+    if (needText) restoreRecordBodies(recordEl);
+    return bodyEl;
+}
+
+/* 折叠消息只出标题栏，正文留到展开时按需补建。
+   文本基准与整表渲染同源（走 toRenderedText），否则记录内搜索的偏移会与页面文字错位。
+   离屏卸载过的正文元素还在（只是文字被清空、高度被锁定），必须先恢复再返回，
+   否则「元素已存在」会被误判成正文已就绪，展开后得到一片空白。
+   @param {HTMLElement} msgItem @returns {HTMLElement|null} */
+function ensureMessageContent(msgItem) {
+    if (!msgItem) return null;
+    const existing = msgItem.querySelector('.rmsg-content');
+    if (existing) {
+        if (unloadedBodies.has(existing)) restoreBody(existing);
+        return existing;
+    }
+    const msg = getMessageByIndex(records[Number(msgItem.dataset.record)], Number(msgItem.dataset.msg));
+    if (!msg) return null;
+    const pre = document.createElement('pre');
+    pre.className = 'rmsg-content';
+    pre.textContent = toRenderedText(msg.content);
+    msgItem.appendChild(pre);
+    return pre;
 }
 
 function renderPanelContent() {
@@ -4398,8 +4644,10 @@ function renderPanelContent() {
     const listEl = panelEl.querySelector('#rlog-list');
     if (!listEl) return;
 
+    /* 可见记录只算一次：「N隐藏」指示器与下面渲染列表共用同一份（每条记录都要遍历子消息判角色筛选） */
+    const visibleRecords = getVisibleRecords();
     updateHeaderTitle();
-    updateFilterIndicator();
+    updateFilterIndicator(visibleRecords);
 
     if (records.length === 0) {
         panelEl.classList.add('rlog-empty-list');
@@ -4407,13 +4655,13 @@ function renderPanelContent() {
             ? '暂无请求记录，请发送消息后查看。'
             : '记录功能已关闭，请点击电源图标开启。';
         listEl.innerHTML = `<div class="rlog-empty">${escapeHtml(emptyMsg)}</div>`;
+        pruneDetachedUnloadedBodies();
         panelContentDirty = false;
         return;
     }
     panelEl.classList.remove('rlog-empty-list');
 
     /* 筛选后无可显示记录：专用空状态 + 一键重置（与「暂无记录」区分） */
-    const visibleRecords = getVisibleRecords();
     if (visibleRecords.length === 0) {
         panelEl.classList.add('rlog-empty-list');
         listEl.innerHTML = `<div class="rlog-empty"><div>没有符合筛选条件的记录</div><button id="rlog-filter-reset-empty" class="rlog-filter-reset-empty-btn">重置筛选</button></div>`;
@@ -4425,6 +4673,7 @@ function renderPanelContent() {
             });
         }
         panelContentDirty = false;
+        pruneDetachedUnloadedBodies();
         return;
     }
 
@@ -4453,21 +4702,14 @@ function renderPanelContent() {
             const allPrecise = rec.messages.every(m => m.tokenPrecise === true);
             const recordTokenPrefix = allPrecise ? '' : '~';
 
-            /* 角色筛选按子消息逐条过滤：只渲染可见子消息，data-msg 仍写真实索引；
-               回复作为最后一条伪消息（data-msg = messages.length），与其他子消息同形态 */
-            const messagesHtml = rec.messages
-                .map((msg, mIdx) => ({ msg, mIdx }))
-                .filter(({ msg }) => isMessageVisible(msg))
-                .map(({ msg, mIdx }) => buildMessageHtml(msg, idx, mIdx))
-                .join('')
-                + (rec.reply && isMessageVisible(rec.reply)
-                    ? buildMessageHtml(rec.reply, idx, rec.messages.length)
-                    : '');
+            /* 折叠记录只出标题栏，整段正文留到展开时由 ensureRecordBody() 补建 */
+            const messagesHtml = rec.collapsed ? '' : buildRecordMessagesHtml(rec, idx);
 
             /* 回复状态标记：仅折叠时显示在按钮组与折叠箭头之间；回复在途时先输出透明占位占住槽位，
                到达后由 appendReplyToRecordDom 原位替换为状态标签，窄屏下不换行移位 */
-            const replyStatusHtml = rec.reply
-                ? `<span class="rlog-reply-status rlog-reply-status-${rec.reply.status}" title="${escapeHtml(getReplyStatusTitle(rec))}">${getReplyStatusLabel(rec.reply.status)}</span>`
+            const recordStatus = getRecordStatus(rec);
+            const replyStatusHtml = recordStatus
+                ? `<span class="rlog-reply-status rlog-reply-status-${recordStatus}" title="${escapeHtml(getReplyStatusTitle(rec))}">${getReplyStatusLabel(recordStatus)}</span>`
                 : (rec.id != null && pendingReplies.has(rec.id)
                     ? '<span class="rlog-reply-status rlog-reply-status-placeholder"></span>'
                     : '');
@@ -4507,7 +4749,7 @@ function renderPanelContent() {
                             <span class="rlog-toggle-icon"><i class="fa-solid fa-chevron-down"></i></span>
                         </div>
                     </div>
-                    <div class="rlog-record-body">
+                    <div class="rlog-record-body" data-body-built="${rec.collapsed ? '0' : '1'}">
                         ${messagesHtml}
                     </div>
                 </div>
@@ -4516,6 +4758,11 @@ function renderPanelContent() {
         .join('');
 
     bindListEvents(listEl);
+
+    /* 把视口外的正文就地卸载（此刻列表已挂载、几何可测）：本次打开只需为可见部分付排版与绘制成本。
+       放在 syncRecordHeaderVars 之前，随后的标题高度重测就落在「正文已卸载」的轻量版面上 */
+    runBodyBandPass(listEl);
+    pruneDetachedUnloadedBodies();
 
     /* 为每条记录写入 --rlog-rec-h（记录标题栏实测高度），供消息标题栏吸顶定位 */
     syncRecordHeaderVars(listEl);
@@ -4529,7 +4776,8 @@ function renderPanelContent() {
 
 /* 同步每条记录的 --rlog-rec-h = 记录标题栏实际高度：消息标题栏的 sticky top 必须等于它才能吸在
    记录标题栏正下方，而记录标题栏会因换行变高（窄屏可达 100px+），写死高度会被遮住。
-   只在布局变化时写入，不参与逐帧滚动。 */
+   只在布局变化时写入，不参与逐帧滚动。
+   所有高度一次性读完再统一写变量：写变量会使样式失效，读写交替会把每条记录的读取都变成一次强制布局。 */
 function syncRecordHeaderVars(listEl) {
     if (!listEl) return;
     ensureSharedResizeObserver();
@@ -4541,17 +4789,139 @@ function syncRecordHeaderVars(listEl) {
             observedRecordHeaders.delete(headerEl);
         }
     });
+    const measured = [];
     listEl.querySelectorAll('.rlog-record').forEach((recordEl) => {
         const headerEl = recordEl.querySelector('.rlog-record-header');
-        if (headerEl) {
-            /* 用 getBoundingClientRect().height（小数）而非 offsetHeight（取整）：
-               换行高度常为小数，取整会在消息标题与记录标题之间留下亚像素缝隙 */
-            recordEl.style.setProperty('--rlog-rec-h', `${headerEl.getBoundingClientRect().height.toFixed(2)}px`);
-            /* 标题栏高度变化（换行/字体/视口变化）时自动刷新偏移 */
-            if (!observedRecordHeaders.has(headerEl)) {
-                observedRecordHeaders.add(headerEl);
-                sharedResizeObserver.observe(headerEl);
-            }
+        if (!headerEl) return;
+        /* 用 getBoundingClientRect().height（小数）而非 offsetHeight（取整）：
+           换行高度常为小数，取整会在消息标题与记录标题之间留下亚像素缝隙 */
+        measured.push([recordEl, headerEl.getBoundingClientRect().height]);
+        /* 标题栏高度变化（换行/字体/视口变化）时自动刷新偏移 */
+        if (!observedRecordHeaders.has(headerEl)) {
+            observedRecordHeaders.add(headerEl);
+            /* 观察边框盒：--rlog-rec-h 写的就是边框盒高度（含内边距），而默认的 content-box
+               在「只有内边距变化」时不通知，会漏掉这类高度变化导致吸顶偏移不更新 */
+            sharedResizeObserver.observe(headerEl, { box: 'border-box' });
+        }
+    });
+    measured.forEach(([recordEl, height]) => {
+        recordEl.style.setProperty('--rlog-rec-h', `${height.toFixed(2)}px`);
+    });
+}
+
+/* boolean: 是否已有「视口尺寸变化」的重测排在下一帧（连续 resize 合并成一帧一次） */
+let viewportSyncQueued = false;
+
+/* number|null: 搜索输入聚焦（虚拟键盘会话）期间被冻结的面板高度(px)；null = 未冻结。
+   仅移动端生效：键盘会缩小布局视口，面板高度若继续用 vh 就会跟着变高变矮，连带触发
+   吸顶重测 / 进度条刷新 / 正文带宽维护等重活。 */
+let searchKeyboardFreezeHeight = null;
+/* HTMLElement|null: 触发本次面板高度冻结的搜索输入框（解除冻结时清理） */
+let searchKeyboardFreezeInput = null;
+/* Array<[string,string,string]>|null: 冻结前面板行内 height/min-height/max-height 的原值快照
+   （含优先级），解除冻结时原样还原——不改变用户手动拖拽缩放后的面板尺寸 */
+let searchKeyboardFreezeStyleSnapshot = null;
+
+/* 移动端视口判定：与样式断点一致（唯一断点 768px） */
+function isMobileViewport() {
+    return window.matchMedia('(max-width: 768px)').matches;
+}
+
+/* 搜索输入聚焦期间冻结面板高度（仅移动端）：键盘会缩小布局视口，面板高度若继续由 vh 决定
+   就会跟着变高变矮，连带触发吸顶重测 / 进度条刷新 / 正文带宽维护（批量卸载与恢复），输入时
+   明显卡顿。这里在聚焦瞬间（视口还没缩）记下面板实测高度并用内联 !important 钉住；先快照
+   原有行内尺寸，解除时原样还原，用户手动拖拽缩放的结果不受影响。 */
+function freezePanelForSearchKeyboard(inputEl) {
+    if (!panelEl || !inputEl || searchKeyboardFreezeHeight !== null) return;
+    if (!isMobileViewport()) return;
+    const height = panelEl.getBoundingClientRect().height;
+    if (!(height > 0)) return;
+    const props = ['height', 'min-height', 'max-height'];
+    searchKeyboardFreezeStyleSnapshot = props.map((prop) => [
+        prop,
+        panelEl.style.getPropertyValue(prop),
+        panelEl.style.getPropertyPriority(prop),
+    ]);
+    searchKeyboardFreezeHeight = height;
+    searchKeyboardFreezeInput = inputEl;
+    const value = height.toFixed(2) + 'px';
+    props.forEach((prop) => panelEl.style.setProperty(prop, value, 'important'));
+}
+
+/* 解除搜索键盘会话的面板高度冻结：还原行内尺寸快照，再补跑一次视口同步
+   （冻结期间被跳过的重活在这一帧统一执行） */
+function unfreezePanelForSearchKeyboard() {
+    if (searchKeyboardFreezeHeight === null) return;
+    searchKeyboardFreezeHeight = null;
+    searchKeyboardFreezeInput = null;
+    if (panelEl && searchKeyboardFreezeStyleSnapshot) {
+        searchKeyboardFreezeStyleSnapshot.forEach(([prop, value, priority]) => {
+            if (value) panelEl.style.setProperty(prop, value, priority);
+            else panelEl.style.removeProperty(prop);
+        });
+    }
+    searchKeyboardFreezeStyleSnapshot = null;
+    scheduleViewportSync();
+}
+
+/* 键盘弹出后搜索框若落到可视区之外（被冻结的面板下沿被键盘盖住），把该记录标题栏（含搜索框）
+   滚到「完整露出」为止——只补足露不出来的那一段（下边被键盘挡住就往上滚刚好露出底边，上边被
+   列表顶边切掉就往下滚刚好露出顶边），不把标题栏直接置顶；已完整可见则不动，不做任何重建与重测。 */
+function ensureSearchInputVisible() {
+    if (searchKeyboardFreezeHeight === null) return;
+    const inputEl = searchKeyboardFreezeInput;
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!inputEl || !inputEl.isConnected || !listEl) return;
+    const listRect = listEl.getBoundingClientRect();
+    const headerEl = inputEl.closest('.rlog-record-header');
+    if (!headerEl) return;
+    const headerRect = headerEl.getBoundingClientRect();
+    /* 可视下界取「列表底边」与「布局视口高度」的较小值：Android 键盘挤压页面时，
+       window.innerHeight 就是键盘上沿，而冻结的面板下沿可能落在它下面 */
+    const visibleTop = listRect.top;
+    const visibleBottom = Math.min(listRect.bottom, window.innerHeight);
+    const margin = 8;
+    /* 只补足缺的那一段：正数＝往上滚露出底边，负数＝往下滚露出顶边 */
+    let delta = 0;
+    if (headerRect.bottom > visibleBottom - margin) {
+        delta = headerRect.bottom - (visibleBottom - margin);
+    } else if (headerRect.top < visibleTop + margin) {
+        delta = headerRect.top - (visibleTop + margin);
+    }
+    if (delta !== 0) listEl.scrollTop += delta;
+}
+
+/* 视口/面板尺寸变化的重测入口：地址栏收放、键盘弹出、拖拽缩放会连续触发 resize，
+   每次都重测全部记录标题栏会成倍放大开销，故合并到下一帧统一执行一次。
+   合并只减少执行次数，不缩减重测内容——尺寸变化最终仍会反映到吸顶偏移。 */
+function scheduleViewportSync() {
+    if (viewportSyncQueued) return;
+    viewportSyncQueued = true;
+    requestAnimationFrame(() => {
+        viewportSyncQueued = false;
+        /* 搜索键盘会话期间面板高度已冻结，RRL 自身几何没有变化：跳过重活，只兜底确认输入框可见 */
+        if (searchKeyboardFreezeHeight !== null) {
+            ensureSearchInputVisible();
+            return;
+        }
+        syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+        /* 视口尺寸变化可能整体改动版面（媒体查询切换内边距/字号等），未必伴随内容区自身尺寸变化，
+           这里保留一次全量更新兜底（定向更新只覆盖「观察到的尺寸变化」） */
+        requestThumbUpdate();
+        /* 视口变化也可能改变正文换行宽度（桌面↔移动断点）：带宽维护内部会检测宽度并重建占位高度 */
+        scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
+        /* 桌面↔移动切换时同步浮标尺寸 */
+        updateBadgeSize();
+        /* 浮标可见时随视口变化夹回可视区域；不限定折叠态——默认入口模式下浮标在非折叠态也会显示 */
+        if (badgeEl && badgeEl.classList.contains('rlog-badge-active')) {
+            const pos = clampBadgeToViewport(
+                parseFloat(badgeEl.style.left) || 0,
+                parseFloat(badgeEl.style.top) || 0
+            );
+            badgeEl.style.left = pos.left + 'px';
+            badgeEl.style.top = pos.top + 'px';
+            /* resize 后同步更新会话内记录位置 */
+            badgePos = pos;
         }
     });
 }
@@ -4578,6 +4948,9 @@ function preserveScrollTop(action, anchorEl) {
             listEl.scrollTop = listEl.scrollTop + (curRelTop - beforeRelTop);
         }
     }
+    /* 折叠/展开会改变列表高度，可能把视口外（带宽外）的内容直接拉进视口——这类变化没有滚动事件，
+       必须补排一次带宽维护，否则补位上来的正文仍是等高占位（表现为「只有标题栏、正文空白」） */
+    scheduleBodyBandPass(listEl);
 }
 
 /* 为单个消息条目绑定交互事件（标题栏折叠/展开 + 复制按钮），整表渲染与回复追加共用。
@@ -4794,6 +5167,8 @@ function toggleRecordCollapse(index, recordEl) {
     } else {
         recordEl.classList.add('expanded');
         recordEl.classList.remove('collapsed');
+        /* 必须先补建正文：「回顶后闪第一条子消息标题」要在这个新生成的子树里取目标 */
+        ensureRecordBody(recordEl);
         /* 仅当本次折叠确实把列表压回顶部时，才对第一条子消息标题栏闪烁提示；
            停留在顶部反复折叠/展开、新记录出现后的普通展开都不闪 */
         if (recordCollapseToppedEl === recordEl) {
@@ -4837,15 +5212,19 @@ function toggleRecordPinned(index, infoEl) {
         : '已取消置顶，将重新参与普通记录清理');
 }
 
-/* 显示置顶/取消置顶的轻量 toast（面板顶部居中）；连续多次只替换文本、重置定时器，不堆叠 */
-function showPinToast(text) {
+/* 显示轻量 toast（面板顶部居中，置顶/清空/主题跟随与占位入口等共用）；
+   连续多次只替换文本、重置定时器，不堆叠。
+   @param {string} text 提示文字
+   @param {{persist?: boolean}} [options] persist=true 时持续显示不自动消失（用于模拟进行中等状态提示），
+   由后续 toast 或点击关闭替换/消除 */
+function showPinToast(text, options = {}) {
     if (!panelEl) return;
     if (!pinToastEl) pinToastEl = panelEl.querySelector('#rlog-pin-toast');
     if (!pinToastEl) return;
     if (pinToastTimer !== null) clearTimeout(pinToastTimer);
     pinToastEl.textContent = text;
     pinToastEl.classList.add('rlog-pin-toast-active');
-    pinToastTimer = setTimeout(hidePinToast, PIN_TOAST_DURATION_MS);
+    pinToastTimer = options.persist ? null : setTimeout(hidePinToast, PIN_TOAST_DURATION_MS);
 }
 
 function hidePinToast() {
@@ -4900,7 +5279,7 @@ function toggleMessageCollapse(recIdx, msgIdx, msgItem) {
     } else {
         msgItem.classList.add('expanded');
         msgItem.classList.remove('collapsed');
-        const contentEl = msgItem.querySelector('.rmsg-content');
+        const contentEl = ensureMessageContent(msgItem);
         if (contentEl) {
             contentEl.scrollTop = 0; /* 折叠后再展开时，从消息内容顶部开始看 */
             createScrollbarForContent(contentEl);
@@ -4940,6 +5319,8 @@ function collapseAllEntries() {
     if (listEl) listEl.scrollTop = 0;
     /* 回顶后对顶部最新一条做提示闪烁 */
     flashTopHint();
+    /* 一次性折叠全部记录会让列表高度骤减、内容整体上移：补排一次带宽维护，避免空白补位 */
+    scheduleBodyBandPass(listEl);
 }
 
 /* 单条记录「折叠所有消息」：折叠本条内所有角色的消息，回滚到本条内最顶端角色消息标题栏并闪烁
@@ -4957,6 +5338,8 @@ function collapseRecordMessages(index) {
     const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
     const recordEl = listEl ? listEl.querySelector(`.rlog-record[data-record-index="${index}"]`) : null;
     if (recordEl) {
+        /* 只要元素与几何（折类名 + 定位 + 闪烁目标都是标题栏），不需要把正文补回来 */
+        ensureRecordBody(recordEl, false);
         /* 折叠本条所有消息时打断进行中的置底闪烁（展开后不再重播） */
         clearHeaderFlash(recordEl);
         recordEl.querySelectorAll('.rmsg-item').forEach(el => {
@@ -4967,6 +5350,8 @@ function collapseRecordMessages(index) {
         scrollToRecordEl(recordEl);
         /* 闪烁本条内最顶端的角色消息标题栏（DOM 顺序第一条即最顶端；角色筛选已在渲染阶段生效） */
         triggerHeaderFlash(recordEl.querySelector('.rmsg-header'));
+        /* 折叠本条所有消息会让下方内容整体上移（可能拉进视口）：补排一次带宽维护 */
+        scheduleBodyBandPass(listEl);
     }
 }
 
@@ -4981,12 +5366,16 @@ function expandRecordMessages(index) {
 
     const recordEl = panelEl.querySelector(`.rlog-record[data-record-index="${index}"]`);
     if (recordEl) {
+        ensureRecordBody(recordEl);
         recordEl.querySelectorAll('.rmsg-item').forEach(el => {
             el.classList.add('expanded');
             el.classList.remove('collapsed');
+            ensureMessageContent(el);
         });
         /* 为消息内容区懒创建进度条（仅视口内立即创建，其余延迟） */
         queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
+        /* 展开会让下方内容整体下移、把上方带宽外的内容顶进视口：补排一次带宽维护 */
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
     }
 }
 
@@ -4997,6 +5386,8 @@ function scrollToRecordBottom(index) {
     const listEl = panelEl.querySelector('#rlog-list');
     const recordEl = listEl.querySelector(`.rlog-record[data-record-index="${index}"]`);
     if (!recordEl) return;
+    /* 只按最后一条子消息的标题栏定位并闪烁，不需要正文文字 */
+    ensureRecordBody(recordEl, false);
 
     const lastItemEl = recordEl.querySelector('.rmsg-item:last-child');
     if (!lastItemEl) return;
@@ -5010,12 +5401,18 @@ function scrollToRecordBottom(index) {
     const headerTopInList = listEl.scrollTop + itemRect.top - listRect.top + headerEl.offsetTop;
 
     const recordHeaderEl = recordEl.querySelector('.rlog-record-header');
-    const stickyHeight = recordHeaderEl ? recordHeaderEl.getBoundingClientRect().height : 40;
-    const targetScroll = Math.max(0, headerTopInList - stickyHeight - 8);
+    /* 落点只按记录标题栏算（不叠加消息标题栏）；offsetHeight 是元素自身高度，不随吸顶状态变化 */
+    const stickyHeight = recordHeaderEl ? recordHeaderEl.offsetHeight : 0;
+    /* 目标标题栏落在记录标题栏下方，位置取剩余可视区的比例（越小越靠上） */
+    const visibleHeight = Math.max(0, listEl.clientHeight - stickyHeight);
+    const targetScroll = headerTopInList - stickyHeight - visibleHeight * 0.13;
 
-    /* 夹到合法滚动范围 */
+    /* 夹到合法滚动范围；下界取记录顶边在列表里的逻辑位置——低于它列表会滚过记录顶边、
+       记录标题栏从吸顶位掉下来。碰不到目标落点时优先保证标题栏吸顶不动 */
     const maxListScroll = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
-    const clampedListScroll = Math.max(0, Math.min(targetScroll, maxListScroll));
+    const recordTopInList = listEl.scrollTop + recordEl.getBoundingClientRect().top - listRect.top;
+    const minListScroll = Math.max(0, Math.min(recordTopInList, maxListScroll));
+    const clampedListScroll = Math.max(minListScroll, Math.min(targetScroll, maxListScroll));
 
     /* 仅在需要调整时滚动（目标已可见时保持不动，闪烁照常触发） */
     if (Math.abs(clampedListScroll - listEl.scrollTop) > 1) {
@@ -5062,13 +5459,8 @@ function cancelPendingFlash() {
    @param {HTMLElement} scopeEl 作用范围（记录、消息项或整个列表） */
 function clearHeaderFlash(scopeEl) {
     if (!scopeEl) return;
-    let cleared = false;
-    scopeEl.querySelectorAll('.rmsg-header.rlog-flash-bottom, .rlog-record-header.rlog-flash-bottom').forEach(el => {
-        el.classList.remove('rlog-flash-bottom');
-        cleared = true;
-    });
-    /* 主动打断（折叠/关面板）后清空回顶时间戳，使回复重渲染不再补闪；未打断时保留 */
-    if (cleared) lastTopHintFlashAt = 0;
+    scopeEl.querySelectorAll('.rmsg-header.rlog-flash-bottom, .rlog-record-header.rlog-flash-bottom')
+        .forEach(el => clearFlashClasses(el));
     if (pendingFlashHeader && scopeEl.contains(pendingFlashHeader)) {
         cancelPendingFlash();
     }
@@ -5109,26 +5501,35 @@ function flashTopHint(recordEl) {
     }
     if (target) {
         triggerHeaderFlash(target);
-        lastTopHintFlashAt = Date.now();
     }
 }
 
-/* 标题栏底色闪烁：先移除类 + 强制回流再添加，保证可重播
+/* 摘掉闪烁相关的全部类（标记类 + 两个轮换动画名类）：打断闪烁 / 关闭面板共用。
+   三个类名与 style.css 的闪烁规则一一对应，改那边要同步改这里 */
+function clearFlashClasses(el) {
+    el.classList.remove('rlog-flash-bottom', 'rlog-flash-a', 'rlog-flash-b');
+}
+
+/* 标题栏底色闪烁：两个内容相同的动画名（rlog-flash-a / -b）轮换添加，
+   同一标题栏在动画没播完时再次触发也能从头重播。
+   轮换状态记在 dataset 而不看类名：clearHeaderFlash() 可能刚把类摘掉，
+   按类名判断会选回同一个动画名，同一任务内等于没换名（不重播）。
    @param {HTMLElement} headerEl */
 function triggerHeaderFlash(headerEl) {
     if (!headerEl) return;
     /* 极简模式：不做闪烁（仅保留滚动定位），也避免 animation:none 下 animationend
        不触发导致 .rlog-flash-bottom 类残留 */
     if (preferences.minimal) return;
-    headerEl.classList.remove('rlog-flash-bottom');
-    void headerEl.offsetWidth; /* 强制回流，确保重复点击可重播动画 */
-    headerEl.classList.add('rlog-flash-bottom');
+    const nextAlt = headerEl.dataset.rlogFlashAlt === 'a' ? 'b' : 'a';
+    headerEl.dataset.rlogFlashAlt = nextAlt;
+    clearFlashClasses(headerEl);
+    headerEl.classList.add('rlog-flash-bottom', `rlog-flash-${nextAlt}`);
     if (!headerEl.dataset.rlogFlashBound) {
         headerEl.dataset.rlogFlashBound = '1';
         headerEl.addEventListener('animationend', function onFlashEnd(e) {
-            /* 亮/暗主题使用不同动画名（rlog-flash-bottom / rlog-flash-bottom-dark），按前缀匹配 */
+            /* 两个轮换动画名（rlog-flash-bottom-a / -b）按前缀匹配 */
             if (e.animationName.startsWith('rlog-flash-bottom')) {
-                this.classList.remove('rlog-flash-bottom');
+                clearFlashClasses(this);
             }
         });
     }
@@ -5385,31 +5786,60 @@ const observedRecordHeaders = new Set();
 /* IntersectionObserver|null: 懒创建进度条的 IntersectionObserver */
 let scrollbarLazyObserver = null;
 
+/* Array<HTMLElement>: 已进入视口、等待分帧创建进度条的内容区（同帧命中多条时排队摊开） */
+const scrollbarCreateQueue = [];
+
+/* boolean: 是否已有一次「分帧创建进度条」排在下一帧 */
+let scrollbarCreateFlushQueued = false;
+
 /* boolean: 是否已有 RAF 排队更新 thumb */
 let thumbUpdateQueued = false;
 
-/* boolean: 是否等待全量更新所有进度条（ResizeObserver 触发） */
+/* boolean: 是否等待全量更新所有进度条（整体几何变化时用，如视口尺寸变化） */
 let thumbFullUpdatePending = false;
 
-/* HTMLElement|null: 单个需要更新 thumb 的 contentEl（scroll 事件触发） */
-let thumbPendingElement = null;
+/* Set<HTMLElement>: 待定向更新的内容区（scroll 事件、ResizeObserver 报告的尺寸/位置变化）。
+   RO 回调只负责收集，实际「读布局值 → 写样式」统一放到同一帧 rAF 里做——
+   在 RO 回调里读布局会触发强制重算，还可能引发 resize loop 告警。 */
+const pendingThumbElements = new Set();
+
+/* 取 ResizeObserver 回调自带的高度：borderBoxSize 与 getBoundingClientRect().height 同为
+   边框盒、同为小数，而观察器已量好尺寸——再读 DOM 只会白触发一次强制布局。
+   个别环境缺 borderBoxSize 时才回退到读 DOM。 */
+function readObservedHeight(entry, el) {
+    const box = entry.borderBoxSize && entry.borderBoxSize[0];
+    if (box && typeof box.blockSize === 'number') return box.blockSize;
+    return el.getBoundingClientRect().height;
+}
 
 /* 确保共享 ResizeObserver 已创建：所有进度条统一由它监听，避免 100+ 个独立观察者的额外开销 */
 function ensureSharedResizeObserver() {
     if (sharedResizeObserver) return;
     sharedResizeObserver = new ResizeObserver((entries) => {
-        /* 记录标题栏高度变化（换行/字体/视口变化）→ 实时刷新吸顶偏移 */
         for (const entry of entries) {
-            const headerEl = entry.target;
-            if (headerEl && headerEl.classList && headerEl.classList.contains('rlog-record-header')) {
-                const recordEl = headerEl.closest('.rlog-record');
+            const entryEl = entry.target;
+            if (!entryEl || !entryEl.classList) continue;
+            /* 记录标题栏高度变化（换行/字体/视口变化）→ 实时刷新吸顶偏移 */
+            if (entryEl.classList.contains('rlog-record-header')) {
+                const recordEl = entryEl.closest('.rlog-record');
                 if (recordEl) {
-                    recordEl.style.setProperty('--rlog-rec-h', `${headerEl.getBoundingClientRect().height.toFixed(2)}px`);
+                    recordEl.style.setProperty('--rlog-rec-h', `${readObservedHeight(entry, entryEl).toFixed(2)}px`);
                 }
+                continue;
+            }
+            /* 内容区自身尺寸变化 → 只把「这一个」排进待更新集合 */
+            if (entryEl.classList.contains('rmsg-content') || entryEl.classList.contains('rlog-read-content')) {
+                requestThumbUpdate(entryEl);
+                continue;
+            }
+            /* 消息标题栏高度变化：同一条消息的正文会被挤上/挤下，正文自身尺寸没变（观察器不会报它），
+               但它相对消息项的偏移变了 → 按消息项取回正文，走同一套定向更新 */
+            if (entryEl.classList.contains('rmsg-header')) {
+                const itemEl = entryEl.closest('.rmsg-item');
+                const contentEl = itemEl ? itemEl.querySelector('.rmsg-content') : null;
+                if (contentEl) requestThumbUpdate(contentEl);
             }
         }
-        /* 任一内容区尺寸变化：合并到同一 RAF 帧做全量 thumb 更新 */
-        requestThumbUpdate();
     });
 }
 
@@ -5423,18 +5853,62 @@ function ensureScrollbarLazyObserver() {
                 const contentEl = entry.target;
                 pendingScrollbarContentEls.delete(contentEl);
                 scrollbarLazyObserver.unobserve(contentEl);
-                createScrollbarForContent(contentEl);
+                scrollbarCreateQueue.push(contentEl);
             }
         });
+        scheduleScrollbarCreateFlush();
     }, { root: null, rootMargin: '200px 0px', threshold: 0 });
 }
 
-/* 请求更新进度条 thumb 位置（RAF 批处理）：不传参＝全量更新，传 contentEl＝只更新该元素对应
-   进度条；同一帧内多次请求合并成一次，避免高频事件连续强制 layout。
+/* 把「创建进度条」摊到连续帧：一帧最多处理 SCROLLBAR_CREATE_PER_FRAME 个，剩下的下一帧继续。
+   只改变创建的时机分布，创建条件、判定与进度条行为都不变。 */
+function scheduleScrollbarCreateFlush() {
+    if (scrollbarCreateFlushQueued) return;
+    scrollbarCreateFlushQueued = true;
+    requestAnimationFrame(flushScrollbarCreateQueue);
+}
+
+function flushScrollbarCreateQueue() {
+    scrollbarCreateFlushQueued = false;
+    const batch = [];
+    while (scrollbarCreateQueue.length > 0 && batch.length < SCROLLBAR_CREATE_PER_FRAME) {
+        const contentEl = scrollbarCreateQueue.shift();
+        /* 已脱离文档 / 已有进度条 / 已卸载成占位 / 重新回到懒观察队列的，都不在这里处理：
+           占位没有溢出，恢复与重新入队各由现有路径负责 */
+        if (!contentEl || !contentEl.isConnected) continue;
+        if (scrollbarCleanups.has(contentEl) || unloadedBodies.has(contentEl)) continue;
+        if (pendingScrollbarContentEls.has(contentEl)) continue;
+        batch.push(contentEl);
+    }
+    if (batch.length > 0) {
+        /* 先读完这一批的布局值，再统一创建 DOM：创建本身会改 DOM，若「建一个读一个」
+           每建一条都让下一条的读取撞上失效的布局，会被迫多做 N 次强制布局 */
+        const measured = batch.map((contentEl) => ({ contentEl, m: measureScrollbarCreation(contentEl) }));
+        measured.forEach(({ contentEl, m }) => {
+            /* 容器结构异常（元素已脱离 contentEl→容器关系）：不收尾也不再登记，交给 isConnected 清理 */
+            if (!m) return;
+            /* 「没量成」≠「不溢出」：当前不可见 / 无布局时 clientHeight 为 0，测出的「不溢出」是假象。
+               重新登记进懒观察队列，等它真正可见时由观察器再报一次 → 下一帧重测。
+               重新 observe 由观察器去重（已在观察列表时不会重复登记）、pending 是 Set 也不重复加入；
+               没量成 ⇒ 元素当前零尺寸、观察器不会判为相交，故不会形成每帧空转的重试循环 */
+            if (!m.measurable) {
+                queueScrollbarsForEls([contentEl]);
+                return;
+            }
+            /* 量成了且确实溢出 → 建条；量成了但不需要滚动（短消息）是终态，不重试 */
+            if (m.hasOverflow) buildScrollbar(contentEl, m);
+        });
+    }
+    if (scrollbarCreateQueue.length > 0) scheduleScrollbarCreateFlush();
+}
+
+/* 请求更新进度条 thumb 位置（RAF 批处理）：不传参＝全量更新（整体几何变化时的兜底），
+   传 contentEl＝只更新该元素对应进度条；同一帧内多次请求合并成一次。
+   定向请求按元素去重后逐个更新（不能只留最后一个：同帧多个元素变化会漏）。
    @param {HTMLElement} [contentEl] */
 function requestThumbUpdate(contentEl) {
     if (contentEl) {
-        thumbPendingElement = contentEl;
+        pendingThumbElements.add(contentEl);
     } else {
         thumbFullUpdatePending = true;
     }
@@ -5444,46 +5918,50 @@ function requestThumbUpdate(contentEl) {
         thumbUpdateQueued = false;
         if (thumbFullUpdatePending) {
             thumbFullUpdatePending = false;
-            thumbPendingElement = null;
-            scrollbarElements.forEach((el) => {
-                const cleanup = scrollbarCleanups.get(el);
-                if (cleanup) updateScrollbarThumb(el, cleanup);
-            });
-        } else if (thumbPendingElement) {
-            const el = thumbPendingElement;
-            thumbPendingElement = null;
-            const cleanup = scrollbarCleanups.get(el);
-            if (cleanup) updateScrollbarThumb(el, cleanup);
+            pendingThumbElements.clear();
+            updateScrollbarThumbs(scrollbarElements);
+            return;
         }
+        if (pendingThumbElements.size === 0) return;
+        const targets = [...pendingThumbElements];
+        pendingThumbElements.clear();
+        updateScrollbarThumbs(targets);
     });
 }
 
-/* 根据 contentEl 滚动状态更新进度条 thumb 位置
-   @param {HTMLElement} contentEl 内容区元素
-   @param {object} cleanup 该进度条的清理数据（含 hitboxEl/thumbEl） */
-function updateScrollbarThumb(contentEl, cleanup) {
+/* 读阶段：一次读完这个内容区需要的全部布局值（四个值互不依赖，且后面写的样式只作用于
+   hitbox/thumb——它们都是 position:absolute 的兄弟节点，不会反过来改这些值）
+   @param {HTMLElement} contentEl 内容区元素 @returns {object} */
+function measureScrollbarThumb(contentEl) {
+    const scrollHeight = contentEl.scrollHeight;
+    const clientHeight = contentEl.clientHeight;
+    const scrollTop = contentEl.scrollTop;
+    const contentTop = contentEl.offsetTop;
+    return { scrollHeight, clientHeight, scrollTop, contentTop, maxScroll: scrollHeight - clientHeight };
+}
+
+/* 写阶段：按已测得的数值写进度条样式（本函数内不再读布局值）
+   @param {object} cleanup 该进度条的清理数据（含 hitboxEl/thumbEl）
+   @param {object} m measureScrollbarThumb 的返回值 */
+function applyScrollbarThumb(cleanup, m) {
     const hitbox = cleanup.hitboxEl;
     const thumb = cleanup.thumbEl;
     if (!hitbox || !thumb) return;
 
-    const scrollHeight = contentEl.scrollHeight;
-    const clientHeight = contentEl.clientHeight;
-    const scrollTop = contentEl.scrollTop;
-    const maxScroll = scrollHeight - clientHeight;
+    const { scrollHeight, clientHeight, scrollTop, contentTop, maxScroll } = m;
 
+    /* 几何先同步、再按需隐藏：内容不需要滚动时（折叠消息、被离屏卸载的等高占位）
+       hitbox 仍然留在 DOM 里但不可见，位置与高度也要跟着内容走，避免留下过期数值 */
+    hitbox.style.top = contentTop + 'px';
+    hitbox.style.height = clientHeight + 'px';
     if (maxScroll <= 0) {
         hitbox.style.display = 'none';
         return;
     }
     hitbox.style.display = '';
 
-    /* hitbox 对齐 contentEl 的位置（因为挂载在 .rmsg-item 上而非 contentEl 内部） */
-    const contentTop = contentEl.offsetTop;
-    hitbox.style.top = contentTop + 'px';
-    hitbox.style.height = clientHeight + 'px';
-
-    /* 轨道可用高度（track 的 top:4px, bottom:4px） */
-    const trackHeight = clientHeight - 8;
+    /* 轨道可用高度：扣掉轨道相对 hitbox 的上下内缩量 */
+    const trackHeight = clientHeight - SCROLLBAR_TRACK_PADDING * 2;
 
     const thumbRatio = clientHeight / scrollHeight;
     const thumbHeight = Math.max(20, thumbRatio * trackHeight);
@@ -5495,6 +5973,19 @@ function updateScrollbarThumb(contentEl, cleanup) {
     thumb.style.top = thumbTop.toFixed(1) + 'px';
 }
 
+/* 更新一组内容区的进度条：整批先读完（布局值），再整批写样式。
+   逐个「写一个、读下一个」会让每次读取都撞上前一次写入造成的样式/布局失效，被迫多做强制布局。
+   @param {Iterable<HTMLElement>} contentEls */
+function updateScrollbarThumbs(contentEls) {
+    const plan = [];
+    for (const contentEl of contentEls) {
+        const cleanup = scrollbarCleanups.get(contentEl);
+        if (!cleanup || !cleanup.hitboxEl || !cleanup.thumbEl) continue;
+        plan.push({ cleanup, metrics: measureScrollbarThumb(contentEl) });
+    }
+    plan.forEach(({ cleanup, metrics }) => applyScrollbarThumb(cleanup, metrics));
+}
+
 /* 为一组 .rmsg-content 懒创建进度条（进入/接近视口才建；已在观察队列或已有进度条则跳过）
    @param {NodeListOf<HTMLElement>|HTMLElement[]} contentEls */
 function queueScrollbarsForEls(contentEls) {
@@ -5504,6 +5995,9 @@ function queueScrollbarsForEls(contentEls) {
     contentEls.forEach((contentEl) => {
         if (!contentEl || !contentEl.classList) return;
         if (!SCROLLABLE_CONTENT_CLASSES.some(c => contentEl.classList.contains(c))) return;
+        /* 被离屏卸载的占位没有内容、也不该有进度条；而且一旦被懒观察器消费掉就会从观察队列里摘除，
+           恢复后这条消息将永久没有进度条——统一由 restoreBody() 在恢复后再入队 */
+        if (unloadedBodies.has(contentEl)) return;
         if (pendingScrollbarContentEls.has(contentEl)) return;
         if (scrollbarCleanups.has(contentEl)) return;
         pendingScrollbarContentEls.add(contentEl);
@@ -5511,28 +6005,59 @@ function queueScrollbarsForEls(contentEls) {
     });
 }
 
-/* 为单个 .rmsg-content 元素创建 overlay 进度条
-   @param {HTMLElement} contentEl .rmsg-content 元素 */
-function createScrollbarForContent(contentEl) {
-    detachScrollbarForContent(contentEl);
+/* 取「高度变化会把该内容区挤上/挤下」的相邻标题栏：只有消息内容区（.rmsg-item 内）有——
+   「查看全文」覆盖层的内容区在固定弹窗里滚动，位置不受同级元素影响，返回 null。
+   @param {HTMLElement} contentEl @returns {HTMLElement|null} */
+function getContentAnchorHeaderEl(contentEl) {
+    const container = contentEl.parentElement;
+    if (!container || !container.classList.contains('rmsg-item')) return null;
+    return container.querySelector('.rmsg-header');
+}
 
-    /* 内容不需要滚动时不需要进度条；这里读 scrollHeight 布局值不可避免，
-       但仅在进入视口时才执行（懒创建 + 单个元素） */
-    if (contentEl.scrollHeight <= contentEl.clientHeight) return;
-
+/* 读阶段：创建进度条前要读的布局/样式值。单独拆出是为了批量创建能「先把一批读完、再统一建」，
+   避免「建一个读一个」反复触发强制布局。
+   @param {HTMLElement} contentEl .rmsg-content 元素 @returns {object|null} */
+function measureScrollbarCreation(contentEl) {
     /* 挂载在 contentEl 的父容器上（非 contentEl 内部）：
        .rmsg-content → .rmsg-item；.rlog-read-content → .rlog-read-overlay */
     /* 这样 hitbox 使用 position: absolute 定位时不会随 contentEl 滚动而移出视口 */
     const container = contentEl.parentElement;
-    if (!container) return;
-
+    if (!container) return null;
     const isRmsgItem = container.classList.contains('rmsg-item');
     const isReadOverlay = container.classList.contains('rlog-read-overlay');
-    if (!isRmsgItem && !isReadOverlay) return;
+    if (!isRmsgItem && !isReadOverlay) return null;
+    const clientHeight = contentEl.clientHeight;
+    return {
+        container,
+        /* 是否量到了有效布局：内容区被折叠 / 整块隐藏时 clientHeight 为 0，
+           此时的「不溢出」是假象，不能当成「不需要进度条」收尾（会永久漏条），
+           要留回待办等可见后重试。正常显示的内容区带内边距，clientHeight 必然 > 0 */
+        measurable: clientHeight > 0,
+        /* 内容不需要滚动时不需要进度条；这里读 scrollHeight 布局值不可避免，
+           但仅在进入视口时才执行（懒创建 + 批量） */
+        hasOverflow: contentEl.scrollHeight > clientHeight,
+        /* 容器需要 position: relative 作为 hitbox 的定位参考 */
+        needsPositionFix: getComputedStyle(container).position === 'static',
+    };
+}
+
+/* 为单个 .rmsg-content 元素创建 overlay 进度条
+   @param {HTMLElement} contentEl .rmsg-content 元素 */
+function createScrollbarForContent(contentEl) {
+    detachScrollbarForContent(contentEl);
+    const measured = measureScrollbarCreation(contentEl);
+    if (!measured || !measured.hasOverflow) return;
+    buildScrollbar(contentEl, measured);
+}
+
+/* 写阶段：按 measureScrollbarCreation 的结果建 DOM 与监听（本函数内不再读布局值）
+   @param {HTMLElement} contentEl .rmsg-content 元素
+   @param {object} measured measureScrollbarCreation 的返回值 */
+function buildScrollbar(contentEl, measured) {
+    const container = measured.container;
 
     /* 确保容器有 position: relative 作为定位参考 */
-    const currentPosition = getComputedStyle(container).position;
-    if (currentPosition === 'static') {
+    if (measured.needsPositionFix) {
         container.style.position = 'relative';
     }
 
@@ -5563,7 +6088,7 @@ function createScrollbarForContent(contentEl) {
         thumbEl: thumb,
     };
 
-    /* 先注册 cleanup 再请求初始更新（updateScrollbarThumb 依赖它查找元素） */
+    /* 先注册 cleanup 再请求初始更新（更新时按内容区查 cleanup 找 hitbox/thumb） */
     scrollbarCleanups.set(contentEl, cleanup);
     requestThumbUpdate(contentEl);
 
@@ -5577,6 +6102,14 @@ function createScrollbarForContent(contentEl) {
         try {
             sharedResizeObserver.observe(contentEl);
         } catch (e) { /* ignore */ }
+        /* 一并观察上面的消息标题栏：它变高会把正文挤下去，而正文自身尺寸没变
+           （观察器不会报正文）——交给 RO 回调映射回本条正文做定向更新 */
+        const anchorHeaderEl = getContentAnchorHeaderEl(contentEl);
+        if (anchorHeaderEl) {
+            try {
+                sharedResizeObserver.observe(anchorHeaderEl, { box: 'border-box' });
+            } catch (e) { /* ignore */ }
+        }
     }
 
     /* --- 交互：圆点跟随手指位置（不跟随 thumb），可到达轨道两端 --- */
@@ -5593,14 +6126,13 @@ function createScrollbarForContent(contentEl) {
         /* 手指相对 hitbox 顶部的 Y 偏移（dot 是 hitbox 子元素，style.top 相对于 hitbox） */
         let relativeY = clientY - hitboxRect.top;
 
-        /* 轨道距 hitbox 边缘的间距，必须与 CSS 中 .rlog-scroll-track 的 top/bottom 一致 */
-        const TRACK_PADDING = 4;          /* CSS: .rlog-scroll-track { top: 4px; bottom: 4px; } */
-        const trackTop = TRACK_PADDING;
-        const trackBottom = hitboxRect.height - TRACK_PADDING;
+        const trackTop = SCROLLBAR_TRACK_PADDING;
+        const trackBottom = hitboxRect.height - SCROLLBAR_TRACK_PADDING;
         relativeY = Math.max(trackTop, Math.min(trackBottom, relativeY));
 
-        /* 圆点高度的一半，必须与 CSS 中 .rlog-scroll-dot 的 height 一致 */
-        const DOT_HALF = 2.5;               /* CSS: .rlog-scroll-dot { height: 6px; } → 6/2=3 */
+        /* 圆点高度的一半：让返回值指向圆点中心（dot 的 top 是左上角）。
+           取值必须等于 CSS 中 .rlog-scroll-dot 实际高度的一半，圆点尺寸调整时同步改这里 */
+        const DOT_HALF = 2.5;
         return (relativeY - DOT_HALF) + 'px';
     }
 
@@ -5614,8 +6146,8 @@ function createScrollbarForContent(contentEl) {
         if (maxScroll <= 0) return 0;
 
         let relativeY = clientY - hitboxRect.top;
-        const trackHeight = clientHeight - 8;
-        const trackTop = 4;
+        const trackHeight = clientHeight - SCROLLBAR_TRACK_PADDING * 2;
+        const trackTop = SCROLLBAR_TRACK_PADDING;
         const trackBottom = trackTop + trackHeight;
         relativeY = Math.max(trackTop, Math.min(trackBottom, relativeY));
 
@@ -5671,34 +6203,243 @@ function createScrollbarForContent(contentEl) {
 /* 移除单个 .rmsg-content 的 overlay 进度条并清理资源
    @param {HTMLElement} contentEl .rmsg-content 元素 */
 function detachScrollbarForContent(contentEl) {
+    /* 登记侧注销无条件执行：无论进度条有没有建出来，都要把「等待创建」的登记清干净。
+       否则正文在排队期被卸载时，pending / 观察器会留下过期登记，
+       之后恢复走 queueScrollbarsForEls() 会被「已在待办」挡下 → 永久缺条。
+       顺带把还在分帧创建队列里的元素出队，避免与本次清理、或随后的重新入队撞车 */
+    const queuedIdx = scrollbarCreateQueue.indexOf(contentEl);
+    if (queuedIdx !== -1) scrollbarCreateQueue.splice(queuedIdx, 1);
+    pendingScrollbarContentEls.delete(contentEl);
+    if (scrollbarLazyObserver) {
+        try { scrollbarLazyObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
+    }
+
     const cleanup = scrollbarCleanups.get(contentEl);
     if (!cleanup) return;
 
     contentEl.removeEventListener('scroll', cleanup.scrollHandler);
     if (sharedResizeObserver) {
         try { sharedResizeObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
+        const anchorHeaderEl = getContentAnchorHeaderEl(contentEl);
+        if (anchorHeaderEl) {
+            try { sharedResizeObserver.unobserve(anchorHeaderEl); } catch (e) { /* ignore */ }
+        }
     }
     scrollbarElements.delete(contentEl);
-    pendingScrollbarContentEls.delete(contentEl);
-    if (scrollbarLazyObserver) {
-        try { scrollbarLazyObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
-    }
     if (cleanup.hitboxEl && cleanup.hitboxEl.parentNode) {
         cleanup.hitboxEl.remove();
     }
     scrollbarCleanups.delete(contentEl);
 }
 
+/* 清掉「排队等进视口再创建进度条」队列里已经离开文档的元素（整表重建后旧元素已被销毁）。
+   观察队列与 Set 都强引用元素，不切断的话每轮重建都会把上一轮整份列表 DOM 留在内存里；
+   仍在文档中的元素（如「查看全文」覆盖层的内容区，重建不会销毁它）保留在队列中，行为不变。 */
+function clearDetachedPendingScrollbarEls() {
+    if (pendingScrollbarContentEls.size === 0) return;
+    pendingScrollbarContentEls.forEach((contentEl) => {
+        if (contentEl.isConnected) return;
+        if (scrollbarLazyObserver) {
+            try { scrollbarLazyObserver.unobserve(contentEl); } catch (e) { /* ignore */ }
+        }
+        pendingScrollbarContentEls.delete(contentEl);
+    });
+}
+
 /* 为列表内所有 .rmsg-content 创建/刷新进度条（重建 DOM 后与展开/折叠后调用），懒创建避免批量卡顿
    @param {HTMLElement} listEl */
 function attachScrollIndicators(listEl) {
-    /* 清理所有已有进度条（因为 renderPanelContent 使用 innerHTML 重建了 DOM） */
+    /* 清理已随重建一起销毁的进度条：只处理已经离开文档的元素。
+       renderPanelContent 用 innerHTML 重建了 DOM，列表内旧元素必然已脱离文档；
+       而「查看全文」覆盖层的内容区与列表平级、重建不会销毁它（它的进度条只在打开覆盖层时挂载一次），
+       一并拆掉就再也没人重建，故保留。 */
     scrollbarCleanups.forEach((_, contentEl) => {
+        if (contentEl.isConnected) return;
         detachScrollbarForContent(contentEl);
     });
+    /* 上一轮排队等待创建进度条的旧元素同样随重建一起销毁，这里一并出队 */
+    clearDetachedPendingScrollbarEls();
 
     /* 全部进入懒创建观察队列，由 IntersectionObserver 按视口按需创建 */
     queueScrollbarsForEls(listEl.querySelectorAll('.rmsg-content'));
+}
+
+/* ── 正文卸载与按需恢复 ─────────────────── */
+
+/* Map<HTMLElement, {scrollTop:number}>: 已被离屏卸载的消息正文元素（文字已清空、高度已锁定）。
+   正文文字不在这里备份——records[].messages[].content 就是唯一来源，恢复时按 toRenderedText 写回，
+   与搜索高亮共用同一文本基准；这里只需要记下元素内部的滚动位置。 */
+const unloadedBodies = new Map();
+
+/* number: 上一次带宽维护时列表的宽度（px）。面板缩放/移动端全屏/桌面↔移动切换都会改变正文换行宽度，
+   已锁定的占位高度随即失效——检测到宽度变化就先把正文全部恢复，下一帧再按新几何重新卸载。 */
+let lastBandListWidth = 0;
+
+/* boolean: 是否已有一次带宽维护排在下一帧（滚动/重建等连续触发合并成一帧一次） */
+let bodyBandPassQueued = false;
+
+/* 正文卸载统计（只读调试口 __rlogDebug.getBodyUnloadStats 用；回归断言与性能探针也读它） */
+const bodyUnloadStats = { passes: 0, lastPassMs: 0, restoreAllCount: 0 };
+
+/* 初始化列表的滚动带维护：滚动时按需恢复进入带宽的正文、卸载离开带宽的正文。
+   只在 buildUI 建好列表后绑定一次（#rlog-list 元素本身在整表重建时不会被替换）。 */
+function initBodyBandMaintenance(listEl) {
+    if (!listEl || listEl.dataset.rlogBandBound === '1') return;
+    listEl.dataset.rlogBandBound = '1';
+    listEl.addEventListener('scroll', () => scheduleBodyBandPass(listEl), { passive: true });
+}
+
+/* 列表可视带宽：视口上下各 BODY_KEEP_SCREENS 屏。列表被面板裁剪，用列表自身矩形最准 */
+function getBodyBand(listEl) {
+    const rect = listEl.getBoundingClientRect();
+    const margin = rect.height * BODY_KEEP_SCREENS;
+    return { top: rect.top - margin, bottom: rect.bottom + margin };
+}
+
+/* 该正文是否被「钉住」不许卸载：含搜索高亮 <mark> 的元素、以及正在搜索的那条记录。
+   搜索高亮与命中跳转都依赖真实文本节点，卸载它们会让高亮失效。 */
+function isBodyPinned(contentEl) {
+    if (contentEl.querySelector('mark.rlog-search-mark, mark.rlog-search-mark-current')) return true;
+    if (!searchState) return false;
+    const recordEl = contentEl.closest('.rlog-record');
+    return !!recordEl && Number(recordEl.dataset.recordIndex) === searchState.recordIndex;
+}
+
+/* 卸载单条正文：清空文字、把高度锁死为实测高度（等高等占位），并记下元素内滚动位置。
+   height 由调用方在「读阶段」一并量好传入；不传时才自己读一次（避免在写阶段里再触发一次强制布局）。
+   注意不要在这里写 contentEl.scrollTop：清空后元素已不可滚、它会自动归零，
+   而赋值会强制一次布局（实测每条约 1ms，400 条就是几百毫秒）。 */
+function unloadBody(contentEl, height) {
+    if (!contentEl || unloadedBodies.has(contentEl)) return false;
+    const measuredHeight = typeof height === 'number' ? height : contentEl.getBoundingClientRect().height;
+    if (measuredHeight <= 0) return false;
+    unloadedBodies.set(contentEl, { scrollTop: contentEl.scrollTop });
+    contentEl.textContent = '';
+    contentEl.style.height = `${measuredHeight}px`;
+    contentEl.dataset.rlogUnloaded = '1';
+    /* 占位不再需要内部进度条：连带清掉 hitbox DOM、scroll 监听与观察注册，资源随占位一起释放。
+       恢复时由 restoreBody 按现有机制重新入队、重新创建，滚动位置已在上方记入 unloadedBodies。 */
+    detachScrollbarForContent(contentEl);
+    return true;
+}
+
+/* 恢复单条正文：从数据层写回文字、解除高度锁定、还原元素内滚动位置，并重新排进进度条懒创建队列。
+   元素已脱离文档（整表重建后的旧节点）时直接丢弃表项，避免把整棵旧列表子树留在内存里。 */
+function restoreBody(contentEl) {
+    if (!contentEl) return false;
+    const state = unloadedBodies.get(contentEl);
+    if (!state) return false;
+    if (!contentEl.isConnected) {
+        unloadedBodies.delete(contentEl);
+        return false;
+    }
+    const msgItem = contentEl.closest('.rmsg-item');
+    const msg = msgItem
+        ? getMessageByIndex(records[Number(msgItem.dataset.record)], Number(msgItem.dataset.msg))
+        : null;
+    if (!msg) {
+        unloadedBodies.delete(contentEl);
+        delete contentEl.dataset.rlogUnloaded;
+        contentEl.style.height = '';
+        return false;
+    }
+    unloadedBodies.delete(contentEl);
+    contentEl.textContent = toRenderedText(msg.content);
+    contentEl.style.height = '';
+    delete contentEl.dataset.rlogUnloaded;
+    if (state.scrollTop) contentEl.scrollTop = state.scrollTop;
+    /* 进度条必须重新入队：占位没有溢出，懒观察器若在占位状态下看到它，会提前返回并把元素摘出观察队列，
+       那样恢复后这条消息就永久没有进度条了（见 queueScrollbarsForEls 里的同款判定） */
+    queueScrollbarsForEls([contentEl]);
+    return true;
+}
+
+/* 恢复一条记录内所有已卸载正文（展开这条记录、以及对该记录做搜索前的必做步骤） */
+function restoreRecordBodies(recordEl) {
+    if (!recordEl) return 0;
+    let count = 0;
+    recordEl.querySelectorAll('.rmsg-content').forEach((contentEl) => {
+        if (restoreBody(contentEl)) count++;
+    });
+    return count;
+}
+
+/* 全量恢复：面板宽度变化使占位高度失效时用（罕见路径，代价可接受） */
+function restoreAllBodies() {
+    [...unloadedBodies.keys()].forEach((contentEl) => restoreBody(contentEl));
+}
+
+/* 丢弃已脱离文档的表项（整表重建用 innerHTML 换掉整份列表后，旧节点必须及时出表，
+   否则 Map 会强引用它们、把上一轮的整棵列表子树留在内存里） */
+function pruneDetachedUnloadedBodies() {
+    if (unloadedBodies.size === 0) return;
+    unloadedBodies.forEach((_, contentEl) => {
+        if (!contentEl.isConnected) unloadedBodies.delete(contentEl);
+    });
+}
+
+/* 一次带宽维护。读阶段先把所有正文的几何与状态读完（不写 DOM），再统一执行恢复与卸载：
+   写一个读下一个会让每次读取都撞上刚写完造成的样式失效，被迫多做强制布局。 */
+function runBodyBandPass(listEl) {
+    if (!listEl || !listEl.isConnected) return;
+    /* 面板隐藏 / 列表没有实际布局时不做：此时 rect 全为 0，带宽判定没有意义 */
+    if (!isPanelVisible || listEl.clientHeight === 0) return;
+
+    const startedAt = performance.now();
+
+    /* 宽度变化 → 占位高度是按旧宽度量的，先全部恢复，下一帧再按新几何重新卸载 */
+    const width = listEl.clientWidth;
+    if (lastBandListWidth > 0 && width !== lastBandListWidth) {
+        restoreAllBodies();
+        bodyUnloadStats.restoreAllCount++;
+        lastBandListWidth = width;
+        scheduleBodyBandPass(listEl);
+        bodyUnloadStats.lastPassMs = performance.now() - startedAt;
+        return;
+    }
+    lastBandListWidth = width;
+
+    const band = getBodyBand(listEl);
+
+    /* 读阶段：内容区矩形 + 是否被钉住 + 是否已卸载（全程不写 DOM） */
+    const measured = [];
+    listEl.querySelectorAll('.rmsg-content').forEach((contentEl) => {
+        measured.push({
+            contentEl,
+            rect: contentEl.getBoundingClientRect(),
+            unloaded: unloadedBodies.has(contentEl),
+            pinned: isBodyPinned(contentEl),
+        });
+    });
+
+    const inBand = (rect) => rect.bottom > band.top && rect.top < band.bottom;
+
+    /* 写阶段：先恢复（恢复优先于卸载，避免带宽边缘来回抖动），再卸载 */
+    measured.forEach(({ contentEl, rect, unloaded }) => {
+        if (unloaded && inBand(rect)) restoreBody(contentEl);
+    });
+    let unloadedCount = 0;
+    measured.forEach(({ contentEl, rect, unloaded, pinned }) => {
+        if (unloaded || pinned || inBand(rect)) return;
+        if (unloadBody(contentEl, rect.height)) unloadedCount++;
+    });
+
+    bodyUnloadStats.passes++;
+    bodyUnloadStats.lastPassMs = performance.now() - startedAt;
+    return unloadedCount;
+}
+
+/* 把带宽维护合并到下一帧（滚动/视口变化等连续触发时，一帧最多跑一次） */
+function scheduleBodyBandPass(listEl) {
+    if (bodyBandPassQueued) return;
+    bodyBandPassQueued = true;
+    requestAnimationFrame(() => {
+        bodyBandPassQueued = false;
+        const target = listEl && listEl.isConnected
+            ? listEl
+            : (panelEl ? panelEl.querySelector('#rlog-list') : null);
+        runBodyBandPass(target);
+    });
 }
 
 /* ── 面板控制 ─────────────────────────── */
@@ -5809,6 +6550,11 @@ function togglePanelWindow(ev) {
         /* 收起为浮标：会话内首次收起记下当次点击坐标作为浮标中心，再次收起复用记录的位置
            （拖动后即为拖动后位置）；刷新后 badgePos 重置为 null，按首次收起处理 */
         hidePinToast();
+        /* 与关闭面板一致：隐藏前清掉播放中的动画类（闪烁 / 主题切换），
+          否则隐藏期间动画不推进，重新展开会从头补播一次 */
+        clearPanelAnimations();
+        /* 与关闭面板一致：收起前趁布局有效把视口外正文卸载，展开时不必为它们付排版与绘制 */
+        runBodyBandPass(panelEl.querySelector('#rlog-list'));
         panelEl.classList.add('rlog-window-collapsed');
         panelEl.style.display = 'none';
         if (badgeEl) {
@@ -5849,6 +6595,8 @@ function togglePanelWindow(ev) {
                 flashTopHint();
             }
         }
+        /* 重新展开后面板不会自己发 scroll 事件，主动跑一次带宽维护（与前一条打开路径一致） */
+        runBodyBandPass(panelEl.querySelector('#rlog-list'));
     }
 }
 
@@ -6063,6 +6811,9 @@ function buildUI() {
                     <i class="fa-solid fa-filter"></i>
                     <span class="rlog-filter-dot"></span>
                 </button>
+                <button id="rlog-global-search-btn" class="rlog-header-btn" title="搜索所有记录（占位）">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
                 <button id="rlog-collapse-all-btn" class="rlog-header-btn" title="折叠所有条目">
                     <i class="fa-solid fa-compress-alt"></i>
                 </button>
@@ -6139,6 +6890,9 @@ function buildUI() {
     `;
 
     panelEl.classList.remove('rlog-window-collapsed');
+
+    /* 面板打开期间的正文带宽维护：滚动时按需补回进入视口的正文、把离开视口的卸载掉 */
+    initBodyBandMaintenance(panelEl.querySelector('#rlog-list'));
 
     /* 影子 DOM 隔离：宿主 + 影子根，面板与其样式放进影子，不被第三方主题 CSS 覆盖 */
     shadowHostEl = document.createElement('div');
@@ -6268,6 +7022,15 @@ function buildUI() {
         });
     }
 
+    /* 全局搜索目前只有入口占位：点击给一条轻量提示（功能正式实现时替换本段） */
+    const globalSearchBtn = panelEl.querySelector('#rlog-global-search-btn');
+    if (globalSearchBtn) {
+        globalSearchBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showPinToast('全局搜索请等待后续更新');
+        });
+    }
+
     /* 全局点击监听：点击外部收起任一展开的抽屉（「更多」「筛选」互斥） */
     if (!document.rlogHeaderDrawerListenerInstalled) {
         document.rlogHeaderDrawerListenerInstalled = true;
@@ -6355,7 +7118,7 @@ function buildUI() {
         }
     });
 
-    buildTempTestButton(panelEl);
+    buildSimulatePromptButton(panelEl);
 
     /* 偏好设置：入口按钮 + 浮层 */
     prefBtnEl = panelEl.querySelector('#rlog-pref-btn');
@@ -6461,25 +7224,11 @@ function buildUI() {
     makeDraggable(panelEl);
     makeResizable(panelEl);
 
-    /* 视口/面板宽度变化（含桌面↔移动切换、拖拽改宽）会让记录标题栏换行高度变化，需重测吸顶偏移 */
+    /* 视口/面板宽度变化（含桌面↔移动切换、拖拽改宽）会让记录标题栏换行高度变化，需重测吸顶偏移；
+       连续 resize 由 scheduleViewportSync 合并到下一帧，一帧最多重测一次 */
     if (!window.rlogHeaderVarResizeInstalled) {
         window.rlogHeaderVarResizeInstalled = true;
-        window.addEventListener('resize', () => {
-            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
-            /* 桌面↔移动切换时同步浮标尺寸 */
-            updateBadgeSize();
-            /* 浮标可见时随视口变化夹回可视区域；不限定折叠态——默认入口模式下浮标在非折叠态也会显示 */
-            if (badgeEl && badgeEl.classList.contains('rlog-badge-active')) {
-                const pos = clampBadgeToViewport(
-                    parseFloat(badgeEl.style.left) || 0,
-                    parseFloat(badgeEl.style.top) || 0
-                );
-                badgeEl.style.left = pos.left + 'px';
-                badgeEl.style.top = pos.top + 'px';
-                /* resize 后同步更新会话内记录位置 */
-                badgePos = pos;
-            }
-        });
+        window.addEventListener('resize', scheduleViewportSync);
     }
 
     /* 安装来源识别监听（仅记录用户原生入口，不受总开关影响） */
@@ -6518,8 +7267,10 @@ function updateThemeButtonIcon() {
         : '<i class="fa-solid fa-sun"></i>';
 }
 
-/* 昼/夜主题切换动画（缩放呼吸 + 颜色渐变）：昼/夜按钮与「跟随 ST 主题」自动切换复用同一段编排。
-   前提：调用前 isLightTheme 已更新、主题类已应用。 */
+/* 昼/夜主题切换动画（缩放呼吸 + 主题色瞬切）：昼/夜按钮与「跟随 ST 主题」自动切换复用同一段编排。
+   前提：调用前 isLightTheme 已更新、主题类已应用。
+   主题色走瞬切而非逐个元素渐变：面板内消息级元素与伪元素各自带 0.35s 颜色过渡，
+   逐个渐变会在切换那一帧起大量过渡、连续掉帧；切换的视觉反馈由缩放呼吸动画承担。 */
 function playThemeSwitchAnimation() {
     if (!panelEl) return;
     panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark');
@@ -6527,40 +7278,43 @@ function playThemeSwitchAnimation() {
     /* 极简模式：主题已通过 applyTheme() 瞬时切换，跳过动画编排（也避免动画类残留） */
     if (preferences.minimal) return;
 
-    /* 移动端（窄屏）禁用颜色过渡快速切换：大量展开消息时做 0.35s 渐变会明显卡顿，
-       主题色在双 RAF 后瞬间切换完成再播放缩放动画；桌面端保留渐变特效 */
-    const isMobile = window.matchMedia('(max-width: 768px)').matches;
-    if (isMobile) {
-        panelEl.classList.add('rlog-theme-transitioning');
+    /* 先禁用面板内所有颜色过渡：跨两帧让主题色在这两帧里一次提交成最终色，
+       再摘掉禁用类、播放缩放呼吸动画 */
+    panelEl.classList.add('rlog-theme-transitioning');
+    requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                panelEl.classList.remove('rlog-theme-transitioning');
-                if (isLightTheme) {
-                    panelEl.classList.add('rlog-anim-light');
-                } else {
-                    panelEl.classList.add('rlog-anim-dark');
-                }
-            });
+            panelEl.classList.remove('rlog-theme-transitioning');
+            /* 这两帧内面板可能已被隐藏（关闭 / 收起为浮标）：隐藏期间不补动画类，
+               否则重新显示时会从头补播一次 */
+            if (!isPanelVisible || isPanelCollapsed) return;
+            if (isLightTheme) {
+                panelEl.classList.add('rlog-anim-light');
+            } else {
+                panelEl.classList.add('rlog-anim-dark');
+            }
+            /* 动画结束后清除动画类，防止关闭再打开窗口时重播 */
+            const onAnimEnd = () => {
+                panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark');
+                panelEl.removeEventListener('animationend', onAnimEnd);
+            };
+            panelEl.addEventListener('animationend', onAnimEnd);
         });
-    } else {
-        void panelEl.offsetWidth;
-        if (isLightTheme) {
-            panelEl.classList.add('rlog-anim-light');
-        } else {
-            panelEl.classList.add('rlog-anim-dark');
-        }
-    }
-
-    /* 动画结束后清除动画类，防止关闭再打开窗口时重播 */
-    const onAnimEnd = () => {
-        panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark');
-        panelEl.removeEventListener('animationend', onAnimEnd);
-    };
-    panelEl.addEventListener('animationend', onAnimEnd);
+    });
 }
 
 function togglePanel() {
     isPanelVisible ? hidePanel() : showPanel();
+}
+
+/* 面板隐藏前（关闭面板 / 收起为浮标）清掉正在播的动画类、取消待触发的闪烁。
+   元素隐藏期间动画不推进、也不派发 animationend，类留着会在重新显示时从头补播；
+   两条隐藏路径共用这里，保证清理行为一致。
+   rlog-theme-transitioning 本来由双 rAF 摘除，若恰好在这两帧内被隐藏也一并清掉。 */
+function clearPanelAnimations() {
+    if (!panelEl) return;
+    clearHeaderFlash(panelEl);   /* 清闪烁类 + 取消面板内待触发的置底闪烁 */
+    cancelPendingFlash();        /* 兜底：待触发目标已被重建/移出面板时同样清掉定时器 */
+    panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark', 'rlog-theme-transitioning');
 }
 
 function showPanel() {
@@ -6597,6 +7351,10 @@ function showPanel() {
         }
     }
 
+    /* 重新显示面板不会触发 scroll 事件，主动跑一次带宽维护：
+       按当前视口（含上面刚做过的回顶）补回需要的正文、把远处的卸载掉 */
+    runBodyBandPass(panelEl.querySelector('#rlog-list'));
+
     /* 面板显示后检查是否需要进行引导 */
     if (window.__RLogTour && typeof window.__RLogTour.check === 'function') {
         setTimeout(() => window.__RLogTour.check(), 300);
@@ -6608,26 +7366,20 @@ function hidePanel() {
     resetSearchIfActive();
     /* 关闭面板时隐藏置顶/取消置顶 toast */
     hidePinToast();
-    /* 关闭面板时取消尚未触发的置底闪烁（避免关闭后定时器在隐藏 DOM 上触发） */
-    cancelPendingFlash();
     /* 关闭面板时隐式清理「查看全文」覆盖层（如存在） */
     closeReadFullOverlay();
     /* 关闭面板时同时收起「偏好设置」浮层，避免浮层开着时关面板、重开仍残留打开态 */
     closePrefPanel();
+    /* 关闭前趁布局仍然有效，把视口外的正文一次性卸载（实测约 3ms）：
+       重新打开时只需为可见部分付排版与绘制，不再为全部已展开正文买单。
+       必须排在 resetSearchIfActive() 之后——搜索高亮先还原成纯文本，这里才不会卸掉带 <mark> 的正文 */
+    runBodyBandPass(panelEl ? panelEl.querySelector('#rlog-list') : null);
     isPanelCollapsed = false;
     if (panelEl) {
-        /* 清理置底跳转的标题栏闪烁类，防止下次打开面板时动画重播 */
-        let cleared = false;
-        panelEl.querySelectorAll('.rmsg-header.rlog-flash-bottom, .rlog-record-header.rlog-flash-bottom').forEach(el => {
-            el.classList.remove('rlog-flash-bottom');
-            cleared = true;
-        });
-        /* 关闭面板等同主动打断：清空回顶时间戳，重开后回复重渲染不再补闪 */
-        if (cleared) lastTopHintFlashAt = 0;
+        /* 清理播放中的动画类（闪烁 / 主题切换），防止下次打开时重播 */
+        clearPanelAnimations();
         panelEl.classList.remove('rlog-window-collapsed');
         panelEl.style.display = 'none';
-        /* 关闭面板时清理残留的主题切换动画类，防止下次打开时重播 */
-        panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark');
     }
     isPanelVisible = false;
     if (toggleBtn) toggleBtn.classList.remove('active');
@@ -6703,6 +7455,8 @@ function makeResizable(el) {
             if (panelEl) panelEl.style.transition = '';
             /* 面板宽度变化可能改变记录标题栏换行高度，重测吸顶偏移 */
             syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+            /* 面板宽度变化也会改变正文换行宽度 → 让带宽维护按新几何重建占位高度 */
+            scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 
@@ -6723,6 +7477,8 @@ function makeResizable(el) {
             panelResizing = false;
             if (panelEl) panelEl.style.transition = '';
             syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+            /* 触屏拖动缩放同理：宽度变了就按新几何重建占位高度 */
+            scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
         }
     });
 })();
@@ -7056,13 +7812,14 @@ window.__RLogApi = {
     setPreference: (key, value) => setPreference(key, value),
 };
 
-/* ── 临时测试功能 ───────────────────────── */
+/* ── 临时测试功能（仅控制台调试函数） ────── */
 
 /* number|null: 临时调试：覆盖回复超时时长（供 simulateReplyTimeout 模拟测试用，后续删除） */
 let replyTimeoutOverrideMs = null;
 
 /* 一键注入全部测试数据（临时功能，后续删除）：8 条 Token 区间记录 + 成功/失败回复模拟 +
-   一次 2 秒超时收尾；入口为「更多」抽屉里的烧瓶按钮或控制台 __RLogApi.injectTokenTierTest() */
+   一次 2 秒超时收尾；入口统一为控制台 __RLogApi.injectTokenTierTest()（原「更多」抽屉烧瓶按钮
+   的功能已移到这里，行为不变：注入后同样收起「更多」抽屉） */
 window.__RLogApi.injectTokenTierTest = function injectTokenTierTest() {
         /* 每个区间的典型 token 数（对应 getTokenTier 的边界） */
         const tierValues = [
@@ -7162,6 +7919,9 @@ window.__RLogApi.injectTokenTierTest = function injectTokenTierTest() {
                 content: '模拟正文：这是已经输出的一部分内容。',
             });
         }
+
+        /* 注入后收起「更多」抽屉，展示测试记录（与原烧瓶按钮点击行为一致） */
+        closeMoreDrawer();
     };
     /* 临时调试功能（后续删除）：模拟回复超时——把 5 分钟缩短成 2 秒，走真实超时收尾流程
        @param {object} [opts] { reasoning, content } @returns {number|null} captureId */
@@ -7202,31 +7962,255 @@ window.__RLogApi.simulateReplyTimeout = function simulateReplyTimeout(opts = {})
         return captureId;
     };
 
-function buildTempTestButton(panelEl) {
-    const btn = document.createElement('button');
-    btn.id = 'rlog-test-btn';
-    btn.className = 'rlog-header-btn';
-    btn.title = '注入测试数据（Token 区间 / 成功 / 失败 / 超时）';
-    btn.innerHTML = '<i class="fa-solid fa-vial"></i>';
-    /* 测试按钮插到「偏好设置」按钮之后（保证顺序：总开关-引导-偏好设置-测试-预览-删除-昼夜）；
-       找不到时兜底插到「引导」之后 */
-    const prefBtn = panelEl.querySelector('#rlog-pref-btn');
-    const anchor = prefBtn || panelEl.querySelector('#rlog-help-btn');
-    if (anchor) {
-        anchor.insertAdjacentElement('afterend', btn);
-    } else {
-        const drawer = panelEl.querySelector('#rlog-more-drawer');
-        if (drawer) drawer.appendChild(btn);
+/* ── 模拟提示词（真实组装，不发请求） ─────── */
+
+/* 模拟记录的来源标记：与真实捕获记录区分（真实记录来自网络层拦截） */
+const SIMULATED_PROMPT_SOURCE = { type: 'plugin', label: '模拟', detail: '模拟记录-未实际发送' };
+
+/* string: 未连接时临时把 ST 连接状态置成这个值，好让真实组装链路能跑（跑完还原原值）；
+   取一个非 no_connection 的说明性文字，状态栏瞬时显示时也能看出是模拟 */
+const SIMULATE_ONLINE_STATUS = '模拟预览';
+
+/* 取 ST 当前聊天补全模型名（模拟记录的模型名回退用；取不到返回 null） */
+function getStChatCompletionModelName() {
+    try {
+        const ctx = window.SillyTavern && typeof window.SillyTavern.getContext === 'function'
+            ? window.SillyTavern.getContext()
+            : null;
+        const name = ctx && typeof ctx.getChatCompletionModel === 'function' ? ctx.getChatCompletionModel() : null;
+        return (typeof name === 'string' && name) ? name : null;
+    } catch (e) {
+        return null;
     }
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (window.__RLogApi && typeof window.__RLogApi.injectTokenTierTest === 'function') {
-            window.__RLogApi.injectTokenTierTest();
-            /* 注入后收起「更多」抽屉，展示测试记录 */
-            const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
-            const moreBtn = panelEl.querySelector('#rlog-more-btn');
-            moreDrawer.classList.remove('expanded');
-            moreBtn.classList.remove('active-drawer-btn');
+}
+
+/* 建一次模拟的捕获上下文（fetch 包装认领目标请求后一路传进记录管线）：
+   - armed：发前通知一到置真，包装据此认出本次模拟那条、认领后置回假；
+   - canceled：超时判失败置真，记录管线建档前查它；
+   - ready / settle：记录已建好的完成信号（只兑现一次；没建成记录兑现空值，模拟流程按失败处理） */
+function createSimulateCaptureCtx() {
+    let settle = null;
+    const captureCtx = {
+        armed: false,
+        canceled: false,
+        ready: null,
+        settle(record) {
+            const resolve = settle;
+            settle = null;
+            if (typeof resolve === 'function') {
+                try { resolve(record || null); } catch (e) { /* ignore */ }
+            }
+        },
+    };
+    captureCtx.ready = new Promise((resolve) => { settle = resolve; });
+    return captureCtx;
+}
+
+/* 组装当前提示词并生成一条模拟记录（绝不发出真实生成请求）。
+   走 ST 真实发送链路，让「压缩系统消息 / 生成拦截器 / 发前钩子 / 提示词管理器条目 / 世界书 / 正则」
+   全部照常生效；请求拼好走到 fetch 层时由本插件自己的记录管线建档，然后再阻断发送。
+   发前通知（聊天补全 CHAT_COMPLETION_SETTINGS_READY / 其它 API GENERATE_AFTER_DATA）一到即
+   武装本次模拟的目标请求，并在同一通知里 stopGeneration()：既让 ST 把这次当「用户中止」处理，
+   也作为「绝不发网络」的兜底。
+   `automatic_trigger: true` 只关掉 ST「把输入框内容插成用户消息」那两个分支（不含其它逻辑），
+   因此不会产生楼层、不会落盘；输入框里的草稿改为我们自己以纯内存对象临时放进 chat，
+   让正则 / 世界书 / 拦截器都能看到它。所有临时改动都在 finally 里逐项还原。
+   全程有兜底超时（SIMULATE_TIMEOUT_MS）：到点停止组装链路、替换 toast，并丢弃本次结果。 */
+async function captureSimulatedPrompt() {
+    if (simulatePromptRunning) return;
+    if (!masterEnabled) {
+        showPinToast('记录功能已关闭，无法生成模拟记录');
+        return;
+    }
+    const ctx = window.SillyTavern && typeof window.SillyTavern.getContext === 'function'
+        ? window.SillyTavern.getContext()
+        : null;
+    if (!ctx || typeof ctx.generate !== 'function' || !ctx.eventSource || !ctx.eventTypes || typeof ctx.stopGeneration !== 'function') {
+        showPinToast('模拟失败：未找到 ST 生成接口');
+        return;
+    }
+    /* 群聊的真实链路会走「多角色批量生成」，可能真的发出请求，故不支持 */
+    if (ctx.groupId) {
+        showPinToast('模拟暂不支持群聊');
+        return;
+    }
+    if (ctx.streamingProcessor) {
+        showPinToast('模拟失败：当前有生成正在进行');
+        return;
+    }
+
+    /* 进入模拟：置运行标志、置灰按钮、显示常驻进度 toast，并启动全程兜底超时 */
+    simulatePromptRunning = true;
+    setSimulateButtonDisabled(true);
+    showPinToast('模拟并拦截中，请稍候（不会实际发送）', { persist: true });
+
+    /* 本次模拟的捕获上下文：贯穿「武装 → 认领建档 → 完成信号」整条链路 */
+    let timedOut = false;
+    const captureCtx = createSimulateCaptureCtx();
+    simulateCaptureCtx = captureCtx;
+
+    const timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        /* 超时＝失败：后到的结果一律丢弃（记录管线建档前会查这个标记），并结束等待 */
+        captureCtx.canceled = true;
+        /* 掐断 ST 组装链路；期间 fetch 硬拦仍生效 */
+        try { ctx.stopGeneration(); } catch (e) { /* ignore */ }
+        showPinToast('模拟失败：生成模拟记录超时');
+        captureCtx.settle(null);
+    }, SIMULATE_TIMEOUT_MS);
+
+    try {
+        await runSimulatedPromptCapture(ctx, () => timedOut, captureCtx);
+    } finally {
+        clearTimeout(timeoutTimer);
+        simulateCaptureCtx = null;
+        captureCtx.armed = false;
+        /* 收尾后即便还有迟到的记录管线在跑，也不再落记录 */
+        captureCtx.canceled = true;
+        simulatePromptRunning = false;
+        simulatePromptActive = false;
+        setSimulateButtonDisabled(false);
+    }
+}
+
+/* 模拟流程主体（前置检查通过后调用）：真实组装 + 武装目标请求 + fetch 层建档 + 还原。
+   @param {object} ctx ST context
+   @param {() => boolean} isTimedOut 兜底超时是否已触发；触发后丢弃本次结果
+   @param {object} captureCtx 本次模拟的捕获上下文（武装 / 取消 / 完成信号，见 createSimulateCaptureCtx） */
+async function runSimulatedPromptCapture(ctx, isTimedOut, captureCtx) {
+    /* —— 快照（finally 里逐项还原） —— */
+    const meta = ctx.chatMetadata;
+    const hadTainted = !!(meta && Object.prototype.hasOwnProperty.call(meta, 'tainted'));
+    const taintedValue = hadTainted ? meta.tainted : undefined;
+    const textarea = document.querySelector('#send_textarea');
+    const savedDraft = textarea ? String(textarea.value || '') : '';
+
+    /* 草稿以纯内存对象临时进 chat（不渲染、不分配 mesid、不发事件、不落盘） */
+    const injectedMessage = savedDraft.length > 0 ? {
+        name: ctx.name1,
+        is_user: true,
+        is_system: false,
+        send_date: Date.now(),
+        mes: typeof ctx.substituteParams === 'function' ? ctx.substituteParams(savedDraft) : savedDraft,
+        extra: {},
+    } : null;
+
+    const isChatCompletion = ctx.mainApi === 'openai';
+    /* 发前通知 = 「请求已拼好、马上要发包」：武装本次模拟的目标请求；同时中止真实发送
+      （fetch 会因 signal 已中止而直接失败，作为「绝不发网络」的兜底） */
+    const onBeforeSend = () => {
+        /* 迟到的通知（模拟已收尾，例如超时之后才发出）不再武装，只做中止 */
+        if (simulatePromptActive) captureCtx.armed = true;
+        ctx.stopGeneration();
+    };
+    const onChatSettingsReady = () => onBeforeSend();
+    const onAfterData = () => onBeforeSend();
+
+    /* 未连接时，ST 会在组装前直接 return；这里临时把连接状态改成非 no_connection 以放行，
+       跑完在 finally 还原原值。拿不到 setOnlineStatus（内部接口）就回退为「无法模拟」提示。 */
+    const previousOnlineStatus = ctx.onlineStatus;
+    let forcedOnlineModule = null;
+    if (previousOnlineStatus === 'no_connection') {
+        try {
+            const scriptModule = await import('/script.js');
+            if (scriptModule && typeof scriptModule.setOnlineStatus === 'function') {
+                scriptModule.setOnlineStatus(SIMULATE_ONLINE_STATUS);
+                forcedOnlineModule = scriptModule;
+            }
+        } catch (e) {
+            forcedOnlineModule = null;
         }
+        if (!forcedOnlineModule) {
+            showPinToast('模拟失败：ST 当前未连接 API');
+            return;
+        }
+    }
+
+    /* 超时可能发生在动态引入 / 等待期间：不再进入组装 */
+    if (isTimedOut()) return;
+
+    simulatePromptActive = true;
+    try {
+        if (isChatCompletion) ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_SETTINGS_READY, onChatSettingsReady);
+        else ctx.eventSource.on(ctx.eventTypes.GENERATE_AFTER_DATA, onAfterData);
+
+        if (injectedMessage) ctx.chat.push(injectedMessage);
+
+        /* automatic_trigger 只跳过「插入用户消息」两分支；ST 自己会读取并清空输入框，finally 还原 */
+        await ctx.generate('normal', { automatic_trigger: true });
+    } catch (e) {
+        /* 中止 / 硬拦导致的失败属预期路径，记录到控制台即可，不向用户报错 */
+        console.debug(`[${PLUGIN_KEY}] 模拟提示词链路结束`, e);
+    } finally {
+        /* —— 不论成功、中止还是异常，逐项还原，绝不遗漏 —— */
+        try { ctx.eventSource.removeListener(ctx.eventTypes.CHAT_COMPLETION_SETTINGS_READY, onChatSettingsReady); } catch (e) { /* ignore */ }
+        try { ctx.eventSource.removeListener(ctx.eventTypes.GENERATE_AFTER_DATA, onAfterData); } catch (e) { /* ignore */ }
+
+        const injectedIndex = injectedMessage ? ctx.chat.lastIndexOf(injectedMessage) : -1;
+        if (injectedIndex !== -1) ctx.chat.splice(injectedIndex, 1);
+
+        if (textarea) {
+            textarea.value = savedDraft;
+            try { textarea.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { /* ignore */ }
+        }
+        if (meta) {
+            if (hadTainted) meta.tainted = taintedValue;
+            else delete meta.tainted;
+        }
+
+        /* 还原真实链路开头动过的发送 / 滑动 / 停止按钮与 is_send_press */
+        try { if (typeof ctx.activateSendButtons === 'function') ctx.activateSendButtons(); } catch (e) { /* ignore */ }
+
+        /* 还原临时改过的连接状态（仅在仍是我们塞进去的值时还原，避免覆盖 ST 期间的真实状态更新） */
+        if (forcedOnlineModule) {
+            try {
+                const liveStatus = window.SillyTavern && typeof window.SillyTavern.getContext === 'function'
+                    ? window.SillyTavern.getContext().onlineStatus
+                    : null;
+                if (liveStatus === SIMULATE_ONLINE_STATUS) forcedOnlineModule.setOnlineStatus(previousOnlineStatus);
+            } catch (e) { /* ignore */ }
+        }
+
+        simulatePromptActive = false;
+    }
+
+    /* 超时后丢弃本次结果：状态已在上面还原，不再等记录、不再改 toast */
+    if (isTimedOut()) return;
+
+    /* 等 fetch 层把这条模拟请求记完：由记录管线在建档当刻兑现；
+       兜底超时到点同样结束等待（此时按失败处理） */
+    const record = await captureCtx.ready;
+    if (isTimedOut()) return;
+    if (!record) {
+        showPinToast('模拟失败：没有拿到可用的提示词数据');
+        return;
+    }
+    showPinToast('已生成模拟记录（未实际发送，仅供参考）');
+}
+
+/* 模拟按钮：追加到「更多」抽屉末尾，点击组装当前提示词并生成一条模拟记录（不发送请求） */
+function buildSimulatePromptButton(panelEl) {
+    const btn = document.createElement('button');
+    btn.id = 'rlog-simulate-btn';
+    btn.className = 'rlog-header-btn';
+    btn.title = '生成模拟记录（不实际发送）';
+    btn.innerHTML = '<i class="fa-solid fa-vial"></i>';
+    /* 追加到抽屉末尾（保证顺序：总开关-引导-偏好设置-预览-清空-昼夜-模拟） */
+    const drawer = panelEl.querySelector('#rlog-more-drawer');
+    if (drawer) drawer.appendChild(btn);
+    btn.addEventListener('click', (e) => {
+        /* 拦住冒泡：点击事件会穿透影子根、被 document 上的「点外部收起抽屉」监听当成面板外点击 */
+        e.stopPropagation();
+        captureSimulatedPrompt().catch((err) => {
+            console.debug(`[${PLUGIN_KEY}] 模拟提示词失败`, err);
+            showPinToast('模拟失败：发生未预期的错误');
+        });
     });
+}
+
+/* 模拟进行中把按钮置灰（视觉上表示不可重复触发；真正的拦截由 simulatePromptRunning 保证） */
+function setSimulateButtonDisabled(disabled) {
+    if (!panelEl) return;
+    const btn = panelEl.querySelector('#rlog-simulate-btn');
+    if (btn) btn.disabled = !!disabled;
 }
