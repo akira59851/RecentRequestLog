@@ -53,7 +53,7 @@ const PLUGIN_KEY = 'RecentRequestLog';
 const DEFAULT_MAX_RECORDS = 10;         /* 默认最大记录数 */
 const MIN_MAX_RECORDS = 10;              /* 用户可设置的最小值 */
 const MAX_MAX_RECORDS = 100;            /* 用户可设置的最大值（防止滥用） */
-const DOUBLE_CLICK_THRESHOLD = 350;     /* 双击判定时间阈值(ms)，小于此间隔视为双击 */
+const SETTINGS_SCHEMA_VERSION = 1;      /* ST extensionSettings 中本插件配置的结构版本 */
 const STORAGE_THEME_KEY = `${PLUGIN_KEY}_theme`;
 const STORAGE_MASTER_KEY = `${PLUGIN_KEY}_masterEnabled`;
 const STORAGE_MAX_RECORDS_KEY = `${PLUGIN_KEY}_maxRecords`;  /* 持久化最大记录数 */
@@ -65,7 +65,25 @@ const STORAGE_PREF_MINIMAL = `${PLUGIN_KEY}_prefMinimal`;            /* 偏好�
 const STORAGE_PREF_BADGE_DEFAULT = `${PLUGIN_KEY}_prefBadgeDefault`; /* 偏好：浮标默认入口（启动默认显示浮标，右上角默认位置） */
 const STORAGE_PREF_FOLLOW_ST_THEME = `${PLUGIN_KEY}_prefFollowStTheme`; /* 偏好：昼夜模式跟随 ST 主题（主面板亮暗自动跟随 ST 主题） */
 const STORAGE_FILTER_STATE_KEY = `${PLUGIN_KEY}_filterState`;        /* 持久化的筛选状态对象（仅当「筛选状态持久化」偏好开启时读写） */
+const STORAGE_TOUR_VERSION_KEY = `${PLUGIN_KEY}_tour_version`;       /* 旧版浏览器存储键：已看过的引导版本 */
+/* 旧版浏览器持久化键：仅用于一次性迁移与本插件 clean，清理时逐个精确删除 */
+const LEGACY_STORAGE_KEYS = [
+    STORAGE_THEME_KEY,
+    STORAGE_MASTER_KEY,
+    STORAGE_MAX_RECORDS_KEY,
+    STORAGE_PREVIEW_KEY,
+    STORAGE_PREF_MOBILE_FULL,
+    STORAGE_PREF_CLICK_OUTSIDE,
+    STORAGE_PREF_FILTER_PERSIST,
+    STORAGE_PREF_MINIMAL,
+    STORAGE_PREF_BADGE_DEFAULT,
+    STORAGE_PREF_FOLLOW_ST_THEME,
+    STORAGE_FILTER_STATE_KEY,
+    STORAGE_TOUR_VERSION_KEY,
+];
 const NATIVE_INTENT_WINDOW_MS = 5000;
+const PANEL_HEADER_DRAG_THRESHOLD = 4; /* 标题栏拖动判定阈值(px)：超过后才移动面板，避免普通点击伴随轻微手抖 */
+const PANEL_HEADER_DRAG_BLOCK_SELECTOR = 'button, input, textarea, select, a, [role="button"], [contenteditable="true"]';
 const BADGE_SIZE = 34;               /* 浮标边长(px)：桌面端 34×34 */
 const BADGE_SIZE_MOBILE = 30;        /* 浮标边长(px)：移动端（≤768px）30×30；桌面/移动由 getBadgeSize() 按断点返回 */
 const BADGE_DRAG_THRESHOLD = 5;      /* 浮标拖动判定阈值(px)：位移超过该值视为拖动，否则视为点击恢复面板 */
@@ -74,8 +92,99 @@ const BADGE_DEFAULT_MARGIN_TOP = 12;  /* 浮标默认位置在 ST 顶部设置�
 const LONG_PRESS_MS = 550;            /* 长按判定阈值(ms)：按下超过此时间且移动未超过容差视为长按 */
 const LONG_PRESS_MOVE_TOLERANCE = 8;  /* 长按移动容差(px)：按下后位移超过该值取消长按 */
 const PIN_TOAST_DURATION_MS = 1800;   /* 置顶/取消置顶提示自动消失时间(ms) */
-const SIMULATE_TIMEOUT_MS = 15000;    /* 生成模拟记录全程兜底超时(ms)：到点停止组装链路、丢弃结果并提示失败 */
+const ANDROID_LONG_COPY_WARN_BYTES = 512 * 1024; /* Android 剪贴板提示线：Binder 约 1 MiB，留一半余量 */
+const ANDROID_LONG_COPY_WARN_TEXT = '内容较长，若无法正常复制，请使用导出功能';
+const RESPONSE_META_DASH = '—';       /* Response 标题行无法计算的指标占位 */
+const RESPONSE_META_DISCLAIMER = '性能数据仅供参考';
+const RESPONSE_META_VALUE_MAX_CHARS = 60; /* Response 详情中可能较长原始值的单行显示上限 */
+const TOKEN_COUNT_PLACEHOLDER = '- tokens'; /* 无实际输出时的完整 token 文本，保持与数字 token 相同后缀 */
+const MESSAGE_READ_TOKEN_THRESHOLD = 800; /* 单条消息达到该 token 数时提供独立阅读入口 */
+
+/* Response 详情只采集白名单中的上游原始字段；规则按列表顺序决定展示顺序。
+   新增字段时优先在这里补规则，不改各接口的正文解析或详情渲染。 */
+const RESPONSE_META_USAGE_ROOTS = [
+    [],
+    ['usage'],
+    ['message', 'usage'],
+    ['response', 'usage'],
+    ['error', 'usage'],
+    ['data', 'usage'],
+];
+const RESPONSE_META_TOKEN_FIELDS = [
+    'prompt_tokens',
+    'completion_tokens',
+    'total_tokens',
+    'input_tokens',
+    'output_tokens',
+];
+const RESPONSE_META_TOKEN_DETAIL_FIELDS = [
+    ['cached_tokens', ['prompt_tokens_details', 'cached_tokens']],
+    ['cache_write_tokens', ['prompt_tokens_details', 'cache_write_tokens']],
+    ['cached_tokens', ['input_tokens_details', 'cached_tokens']],
+    ['reasoning_tokens', ['completion_tokens_details', 'reasoning_tokens']],
+    ['reasoning_tokens', ['output_tokens_details', 'reasoning_tokens']],
+    ['cached_tokens', ['cached_tokens']],
+    ['cache_write_tokens', ['cache_write_tokens']],
+    ['cache_read_input_tokens', ['cache_read_input_tokens']],
+    ['cache_creation_input_tokens', ['cache_creation_input_tokens']],
+    ['reasoning_tokens', ['reasoning_tokens']],
+];
+const RESPONSE_META_GEMINI_TOKEN_RULES = [
+    ['promptTokenCount', ['usageMetadata', 'promptTokenCount']],
+    ['candidatesTokenCount', ['usageMetadata', 'candidatesTokenCount']],
+    ['totalTokenCount', ['usageMetadata', 'totalTokenCount']],
+    ['cachedContentTokenCount', ['usageMetadata', 'cachedContentTokenCount']],
+    ['thoughtsTokenCount', ['usageMetadata', 'thoughtsTokenCount']],
+];
+const RESPONSE_META_END_RULES = [
+    ['finish_reason', ['finish_reason']],
+    ['finish_reason', ['choices', 0, 'finish_reason']],
+    ['finish_reason', ['choices', 0, 'message', 'finish_reason']],
+    ['finishReason', ['finishReason']],
+    ['finishReason', ['candidates', 0, 'finishReason']],
+    ['stop_reason', ['stop_reason']],
+    ['stop_reason', ['message', 'stop_reason']],
+    ['stop_reason', ['delta', 'stop_reason']],
+    ['stop_sequence', ['stop_sequence']],
+    ['stop_sequence', ['message', 'stop_sequence']],
+    ['stop_sequence', ['delta', 'stop_sequence']],
+    ['incomplete_details', ['incomplete_details']],
+    ['incomplete_details', ['response', 'incomplete_details']],
+    ['incomplete_details', ['error', 'incomplete_details']],
+    ['status', ['status']],
+    ['status', ['response', 'status']],
+    ['status', ['error', 'status']],
+    ['blockReason', ['blockReason']],
+    ['blockReason', ['promptFeedback', 'blockReason']],
+];
+const RESPONSE_META_FIELD_RULES = [
+    ...RESPONSE_META_TOKEN_FIELDS.flatMap((name) => RESPONSE_META_USAGE_ROOTS.map((root) => ({
+        key: name,
+        path: [...root, name],
+    }))),
+    ...RESPONSE_META_TOKEN_DETAIL_FIELDS.flatMap(([name, suffix]) => RESPONSE_META_USAGE_ROOTS.map((root) => ({
+        key: name,
+        path: [...root, ...suffix],
+    }))),
+    ...RESPONSE_META_GEMINI_TOKEN_RULES.map(([name, path]) => ({
+        key: name,
+        path,
+    })),
+    ...RESPONSE_META_END_RULES.map(([name, path]) => ({
+        key: name,
+        path,
+    })),
+    ...RESPONSE_META_USAGE_ROOTS.map((root) => ({
+        key: 'cost',
+        path: [...root, 'cost'],
+    })),
+].map((rule, order) => ({ ...rule, order }));
+const SIMULATE_TIMEOUT_MS = 30000;    /* 生成模拟记录全程兜底超时(ms)：到点停止组装链路、丢弃结果并提示失败 */
 const ST_THEME_DARK_LUMINANCE = 0.5;  /* ST 主题背景色相对感知亮度低于该值视为深色主题（浮标改用浅色一套） */
+const QUICK_REPLY_ENTRY_SET_NAME = 'RecentRequestLog'; /* 插件专用原生 QR 集合名（稳定标识，不随界面语言变化） */
+const QUICK_REPLY_ENTRY_LABEL = '最近请求记录';       /* 原生 QR 按钮文字与标题 */
+const QUICK_REPLY_ENTRY_COMMAND = 'rlog-toggle';      /* 插件常驻 slash 命令：原生 QR 点击与入口隐藏时的兜底 */
+const ENTRY_PREFERENCE_KEYS = ['badgeDefault', 'quickReplyEntry', 'hideExtensionEntry']; /* 与可见入口相关的偏好键 */
 
 /* ── 请求来源识别（证据分层判定，RQ-32）相关常量 ── */
 const SOURCE_PLUGIN_DEFAULT_DETAIL = '插件/非原生请求'; /* 判「插件」时的悬停说明（沿用既有文案，值域不变） */
@@ -91,29 +200,34 @@ const SOURCE_CORRECTION_MIN_OVERLAP = 24;     /* 修正匹配的最小重叠长�
 const SENSITIVE_BODY_FIELDS = ['proxy_password'];
 const SENSITIVE_BODY_MASK = '***';
 
-/* 影子内 FA 固壳：仅插件实际使用的 33 个实心图标（content 取自 ST 现版 fontawesome.min.css 6.5.2，非猜测）
+/* 影子内 FA 固壳：仅插件实际使用的 39 个实心图标（content 取自 ST 现版 fontawesome.min.css 6.5.2，非猜测）
    新增图标时在此补一行「图标名: '\\fXXX'」即可 */
 const FA_SOLID_CONTENT = {
     'arrow-down': '\\f063',
     'arrow-up': '\\f062',
+    'arrow-up-right-from-square': '\\f08e',
     'check': '\\f00c',
     'chevron-down': '\\f078',
     'chevron-right': '\\f054',
     'chevron-up': '\\f077',
+    'circle-stop': '\\f28d',
     'comment-dots': '\\f4ad',
-    'compress-alt': '\\f422',
     'copy': '\\f0c5',
     'ellipsis': '\\f141',
     'eye': '\\f06e',
     'eye-slash': '\\f070',
-    'expand': '\\f065',
-    'file-lines': '\\f15c',
+    'file-export': '\\f56e',
+    'clipboard-list': '\\f46d',
     'filter': '\\f0b0',
+    'flask': '\\f0c3',
     'gear': '\\f013',
     'heart': '\\f004',
     'heart-circle-check': '\\e4fd',
     'list': '\\f03a',
     'magnifying-glass': '\\f002',
+    'maximize': '\\f31e',
+    'minimize': '\\f78c',
+    'minus': '\\f068',
     'moon': '\\f186',
     'paper-plane': '\\f1d8',
     'power-off': '\\f011',
@@ -123,13 +237,14 @@ const FA_SOLID_CONTENT = {
     'sun': '\\f185',
     'trash-can': '\\f2ed',
     'user': '\\f007',
-    'vial': '\\f492',
+    'window-maximize': '\\f2d0',
+    'window-restore': '\\f2d2',
     'xmark': '\\f00d',
     'caret-down': '\\f0d7',
     'clock-rotate-left': '\\f1da',
 };
 
-/* number: 当前生效的最大记录数上限，从 localStorage 加载或使用默认值 */
+/* number: 当前生效的最大记录数上限，从 ST 扩展设置加载或使用默认值 */
 let MAX_RECORDS = DEFAULT_MAX_RECORDS;
 const AI_GENERATION_PATH_PATTERNS = [
     '/generate',
@@ -185,13 +300,15 @@ const ENVELOPE_PROXY_SOURCE = { type: 'plugin', label: '插件', detail: '插件
    确保「只组装、绝不发网络」 */
 const GENERATE_ENDPOINT_RE = /\/api\/backends\/[^/?#]+\/generate\b/i;
 
-/* number: 回复追踪超时（5 分钟）：超时未结束即停止追踪并标记 Timeout */
-const REPLY_TIMEOUT_MS = 5 * 60 * 1000;
+/* number: 回复追踪超时的默认值、有效范围与待回复硬上限 */
+const DEFAULT_REPLY_TIMEOUT_SEC = 300;
+const MIN_REPLY_TIMEOUT_SEC = 0;
+const MAX_REPLY_TIMEOUT_SEC = 3600;
+const MAX_PENDING_REPLIES_HARD_LIMIT = 100;
+const PREF_NUMBER_NOTICE_INTERVAL_MS = 1000;
 
 /* number: 回复终态后、记录尚未建成时的最长保留时间（等待 addRecord 挂载） */
 const PENDING_REPLY_KEEP_MS = 60 * 1000;
-/* number: 回复待办区最大条目数（防止并发请求过多导致内存膨胀） */
-const MAX_PENDING_REPLIES = 100;
 
 /* number: 搜索输入防抖延迟(ms)，输入停止后过久再执行搜索 */
 const SEARCH_DEBOUNCE_MS = 120;
@@ -222,6 +339,10 @@ const INIT_RETRY_CTX_MS = 300;
 const APP_READY_FALLBACK_MS = 500;
 /* Token 区间上边界（降序，单位 token）：getTokenTier 按 >= 边界返回区间等级 1-7 */
 const TOKEN_TIER_BOUNDARIES = [200000, 128000, 64000, 32000, 16000, 8000, 4000];
+/* number: Token 闪烁提醒阈值：达到阈值时覆盖区间色并闪烁；0 表示完全关闭自定义警示层 */
+const DEFAULT_TOKEN_WARNING_THRESHOLD = 200000;
+const MIN_TOKEN_WARNING_THRESHOLD = 0;
+const MAX_TOKEN_WARNING_THRESHOLD = 1000000;
 
 /* ── 状态变量 ─────────────────────────── */
 
@@ -234,12 +355,23 @@ let event_types = null;
    只在 captureSimulatedPrompt 内短暂置真，finally 必定复位 */
 let simulatePromptActive = false;
 
-/* boolean: 生成模拟记录流程进行中（含组装、还原、本地统计）——期间按钮置灰、不可重复触发 */
+/* boolean: 生成模拟记录流程进行中（含组装、还原、本地统计）——期间按钮切换为手动停止 */
 let simulatePromptRunning = false;
 
 /* object|null: 本次模拟的捕获上下文（形状见 createSimulateCaptureCtx），只在一次模拟内存在。
    跟着目标请求一路传进记录管线，供异步建档阶段判断归属；不靠回头读全局标志（那时可能已复位） */
 let simulateCaptureCtx = null;
+
+/* object|null: 当前模拟运行状态（取消原因 / 超时定时器 / 取消方法）。
+   迟到回调只持有自己的运行对象与 captureCtx，不能改写下一次模拟的全局状态 */
+let simulateActiveRun = null;
+
+/* object|null: 本次指针按下时模拟按钮的意图（start / stop），供随后的 click 消费一次 */
+let simulateButtonIntent = null;
+/* number: 指针意图序号，防止一次手势的清理回调误删后续手势 */
+let simulateButtonIntentSeq = 0;
+/* number|null: pointerup 后等待 click 处理的延迟清理定时器 */
+let simulateButtonIntentTimer = null;
 
 /* Array: 抓取到的记录列表 */
 let records = [];
@@ -273,7 +405,7 @@ let badgeVisualEl = null;
 let selfCssTextCache = null;
 
 /* {left,top}|null: 浮标会话内位置（浮标左上角坐标）。
-   首次收起记录点击坐标，拖动后更新，再次收起复用；刷新即清。 */
+   首次最小化使用右上角默认位置，拖动后更新，再次收起复用；刷新即清。 */
 let badgePos = null;
 
 /* boolean: 是否拦截「点击浮标恢复面板」后浏览器派发的原生 click（一次性标记）。
@@ -296,8 +428,8 @@ let isPanelVisible = false;
    面板隐藏时 DOM 保留，避免每次打开都全量重建造成卡顿。 */
 let panelContentDirty = true;
 
-/* boolean: 是否为明亮模式 */
-let isLightTheme = false;
+/* boolean: 是否为明亮模式（默认亮色；已有保存值会在初始化时覆盖） */
+let isLightTheme = true;
 
 /* boolean: 面板窗口是否折叠 */
 let isPanelCollapsed = false;
@@ -305,14 +437,23 @@ let isPanelCollapsed = false;
 /* boolean: 面板隐藏/折叠期间是否有新记录到达，恢复显示时需要回到列表顶部 */
 let pendingScrollToTop = false;
 
-/* boolean: 插件总开关是否启用（持久化到 localStorage，首次安装默认开启） */
-let masterEnabled = true;
+/* boolean: 页面初始化时冻结的全屏默认状态；之后视口变化或偏好修改都不重新计算 */
+let initialFullscreenActive = false;
 
-/* HTMLElement|null: 设置最大记录数的弹窗 DOM 元素 */
-let maxRecordsDialog = null;
+/* boolean|null: 当前页面内的全屏覆盖；null 表示未手动切换，标题栏操作与移动端偏好切换都会更新它 */
+let manualFullscreenOverride = null;
+
+/* boolean: 插件总开关是否启用（持久化到 ST 扩展设置，首次安装默认开启） */
+let masterEnabled = true;
 
 /* HTMLElement|null: 置顶/取消置顶轻量提示 toast 元素（面板顶部居中） */
 let pinToastEl = null;
+
+/* HTMLElement|null: Response 指标说明 Popover（面板内部，依靠顶部层级避免被列表裁剪） */
+let responseMetaTipEl = null;
+
+/* HTMLElement|null: 当前 Response 指标说明的 ⓘ 锚点 */
+let responseMetaTipAnchorEl = null;
 
 /* timeout|null: 置顶/取消置顶提示自动消失的定时器 */
 let pinToastTimer = null;
@@ -357,10 +498,36 @@ let iframeHooksInstalled = false;
 /* object: 最近一次信封解包尝试的结果（供 __rlogDebug 查询；只记原因与候选序号，不记真实地址） */
 let lastEnvelopeResult = { hit: false, reason: 'none', urlCandidateIndex: null, bodyCandidateIndex: null };
 
+/* object: 请求正文管线计数。 */
+const requestPipelineStats = {
+    analyzeCalls: 0,
+    messageParseCalls: 0,
+    hintScans: 0,
+    jsonParses: 0,
+    envelopeParses: 0,
+    requestTextReads: 0,
+};
+
+/* object|null: 最近一次正文描述、请求计划与 Fetch 入口上下文摘要。 */
+let lastBodyDescriptorSummary = null;
+let lastRequestPlanSummary = null;
+let lastFetchSourceContextSummary = null;
+
+function summarizeBodyDescriptor(descriptor) {
+    if (!descriptor) return null;
+    return {
+        state: descriptor.state,
+        origin: descriptor.origin,
+        hasRawText: descriptor.hasRawText,
+        unsupportedReason: descriptor.unsupportedReason,
+    };
+}
+
 /* number: 递增的请求捕获编号，用于把回复精确挂回对应记录 */
 let captureSeq = 0;
 
-/* 尚未挂载到记录的回复待办区（key: captureId）：{ startTime, timer, expireTimer, status,
+/* 尚未挂载到记录的回复待办区（key: captureId）：{ startTime, firstTokenAt, streaming,
+   elapsedMs, httpStatus, upstreamMeta, upstreamMetaByPath, timer, expireTimer, status,
    content, reasoning, failReason, time, reader, finished }，记录建成后由 consumePendingReply 消费。 */
 const pendingReplies = new Map();
 
@@ -420,15 +587,17 @@ let lastExclusionReason = '';
 /* boolean: UI 是否已构建（防止 init() 竞态导致双重建构） */
 let uiBuilt = false;
 
-/* boolean: 内容预览开关，默认关闭（持久化到 localStorage） */
+/* boolean: 内容预览开关，默认关闭（持久化到 ST 扩展设置） */
 let contentPreviewEnabled = false;
 
 /* boolean|null: 强制覆盖内容预览开关（用于引导程序演示） */
 let forcePreviewState = null;
 
-/* @type {object} 偏好设置状态（6 项，默认全关；持久化到 localStorage） */
+/* @type {object} 偏好设置状态（8 项，默认全关；持久化到 ST 扩展设置） */
 let preferences = {
     badgeDefault: false,   /* boolean: 浮标默认入口（开启后插件启动默认显示浮标，右上角默认位置；关闭面板/最小化时浮标回到 badgePos） */
+    quickReplyEntry: false, /* boolean: QR 栏入口（开启后启用插件专用原生 QR 集合） */
+    hideExtensionEntry: false, /* boolean: 隐藏扩展菜单默认入口；与其余入口开关相互独立 */
     followStTheme: false,  /* boolean: 昼夜模式跟随 ST 主题（开启后主面板亮暗自动跟随 ST 主题，手动昼/夜按钮不生效；与浮标配色互不相干） */
     mobileFull: false,     /* boolean: 手机端全屏（移动端打开面板自动铺满全屏） */
     clickOutside: false,   /* boolean: 点击插件面板外关闭整个面板（双端通用，全屏时自然不生效） */
@@ -436,11 +605,26 @@ let preferences = {
     minimal: false,        /* boolean: 极简模式（开启后去掉过渡/动画/平滑滚动/闪烁/浮层虚化，保留状态反馈与引导动效） */
 };
 
+/* number: 当前生效的回复等待超时（秒）；0 表示不设超时。与布尔偏好分开保存 */
+let replyTimeoutSec = DEFAULT_REPLY_TIMEOUT_SEC;
+
+/* number: 当前生效的 Token 闪烁提醒阈值；0 表示只保留原有区间配色 */
+let tokenWarningThreshold = DEFAULT_TOKEN_WARNING_THRESHOLD;
+
+/* number: 上次展示数字偏好输入错误 toast 的时间（限制连续非法输入反复弹提示） */
+let prefNumberNoticeAt = 0;
+
 /* HTMLElement|null: 偏好设置浮层（遮罩 + 面板）DOM 元素 */
 let prefOverlayEl = null;
 
 /* HTMLElement|null: 偏好设置「更多」抽屉入口按钮（用于切换心形图标态） */
 let prefBtnEl = null;
+
+/* boolean: 插件常驻 slash 命令是否已注册 */
+let toggleCommandReady = false;
+
+/* Promise: QR 入口集合变更串行执行，避免快速切换偏好时创建/移除互相覆盖 */
+let quickReplyEntrySyncQueue = Promise.resolve();
 
 /* MutationObserver|null: 监听 <html> 的 style 属性变化，感知 ST 主题切换以同步面板主题
    （仅「昼夜模式跟随 ST 主题」开启时挂载；浮标有自己独立的同名观察者，两者互不共用、互不影响） */
@@ -449,6 +633,20 @@ let panelThemeObserver = null;
 /* @type {object|null} 当前搜索状态（同一时间仅一条记录可搜索）
    { recordIndex, keyword, matches: [{msgIdx, start, end}], currentIdx, searchEl } */
 let searchState = null;
+
+/* @type {object|null} 全局搜索状态（与单条搜索独立，不保存 DOM 节点）
+   { keyword, matches: [{record, msgIdx, start, end}], currentIdx, hasNewData,
+     highlightedRecords: Map<record, {manual, domPainted}> } */
+let globalSearchState = null;
+
+/* boolean: 全局搜索抽屉是否打开；与单条记录搜索状态分开管理 */
+let globalSearchOpen = false;
+
+/* number: 清除“抽屉互切”标记的下一帧任务，避免连续切换时旧回调提前清掉新状态 */
+let headerDrawerSwapClearFrame = 0;
+
+/* ResizeObserver|null: 让全局搜索的独立防误触层持续对齐搜索控件 */
+let globalSearchGuardObserver = null;
 
 /* number|null: 搜索输入 debounce 定时器 ID */
 let searchDebounceTimer = null;
@@ -461,6 +659,9 @@ let filterState = {
     model: { gemini: true, claude: true, deepseek: true, other: true },
 };
 
+/* object|null: ST extensionSettings 中本插件配置的规范化快照 */
+let pluginSettings = null;
+
 /* HTMLElement|null: 置底跳转后待闪烁的标题栏（平滑滚动到位后触发） */
 let pendingFlashHeader = null;
 /* number|null: 置底闪烁兜底定时器（scrollend 未触发时兜底） */
@@ -468,11 +669,17 @@ let pendingFlashTimer = null;
 /* HTMLElement|null: 折叠触发回顶的记录元素（展开同一条记录时才闪烁） */
 let recordCollapseToppedEl = null;
 
-/* HTMLElement|null: 当前「查看全文」覆盖层 DOM 元素 */
+/* HTMLElement|null: 当前阅读覆盖层 DOM 元素（整条记录或单条消息） */
 let readFullOverlayEl = null;
 
 /* number|null: 当前打开覆盖层对应的记录索引 */
 let readFullRecordIndex = null;
+
+/* string: 当前阅读模式：'record'（整条记录）或 'message'（单条消息） */
+let readOverlayMode = 'record';
+
+/* HTMLElement|null: 单条消息阅读覆盖层关闭后要恢复焦点的触发按钮 */
+let readOverlayReturnFocusEl = null;
 
 /* string: 当前显示格式：'formatted'（整理）或 'raw'（原始 JSON） */
 let readFullFormat = 'formatted';
@@ -574,6 +781,70 @@ async function computeTokensForMessages(messages, modelName) {
     }
 }
 
+/* OpenAI 聊天补全专用：按最终请求中的完整消息对象逐条计算，复用 ST 的 token 缓存。
+   单条使用 full=false，只取该消息在整次请求中的自身份额；结构化内容继续走现有统计路径。 */
+let stTokenizersModulePromise = null;
+
+function loadStTokenizersModule() {
+    if (!stTokenizersModulePromise) {
+        stTokenizersModulePromise = import('/scripts/tokenizers.js');
+    }
+    return stTokenizersModulePromise;
+}
+
+async function computeOpenAiPromptTokens(messages, finalMessages, modelName) {
+    let countTokensOpenAIAsync = null;
+    try {
+        ({ countTokensOpenAIAsync } = await loadStTokenizersModule());
+    } catch (e) {
+        await computeTokensForMessages(messages, modelName);
+        return;
+    }
+
+    const ctx = getStContextSafe();
+    let stModelName = '';
+    try {
+        if (ctx && typeof ctx.getChatCompletionModel === 'function') {
+            stModelName = ctx.getChatCompletionModel();
+        }
+    } catch (e) { /* ignore */ }
+    const tokenizerCompatible = isSameModelFamily(modelName, stModelName);
+
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        try {
+            msg.tokens = await countTokensOpenAIAsync(finalMessages[i], false);
+            msg.tokenPrecise = tokenizerCompatible;
+        } catch (e) {
+            const byteLength = new TextEncoder().encode(msg.content).length;
+            msg.tokens = Math.ceil(byteLength / 3.35);
+            msg.tokenPrecise = false;
+        }
+    }
+}
+
+/* 取回复中真正由模型生成的非空片段：思考与正文分开保留，供 token 统计使用。
+   不包含展示用的 <think> 标签、分隔空行或失败原因。 */
+function getReplyOutputParts(replyData) {
+    if (!replyData) return [];
+    return [replyData.reasoning, replyData.content]
+        .filter((text) => typeof text === 'string' && text.trim())
+        .map((text) => text.trim());
+}
+
+/* 分别统计回复原始片段再相加：避免把界面包装标签或片段之间的展示分隔符计入 token。 */
+async function computeTokensForReplyOutput(parts, modelName) {
+    let tokens = 0;
+    let tokenPrecise = true;
+    for (const content of parts) {
+        const sample = { content };
+        await computeTokensForMessages([sample], modelName);
+        tokens += Number(sample.tokens) || 0;
+        tokenPrecise = tokenPrecise && sample.tokenPrecise === true;
+    }
+    return { tokens, tokenPrecise };
+}
+
 /* 从请求体提取模型名（各 API 字段名不同）
    @param {object} body @returns {string} 提取不到返回 未知模型 */
 function extractModelName(body) {
@@ -596,14 +867,27 @@ function extractModelName(body) {
     return '未知模型';
 }
 
+/* 取消息当前应显示的文字：有结构化媒体时使用带占位的整理文本，否则回退原文。
+   token 与原始请求仍只使用 content，不读取这里的占位。 */
+function getMessageDisplayText(msg) {
+    if (msg && typeof msg.formattedContent === 'string') return msg.formattedContent;
+    return msg && typeof msg.content === 'string' ? msg.content : '';
+}
+
 function getFullPromptText(record) {
     return record.messages
-        .map((m) => `[${m.role}]\n${m.content}`)
+        .map((m) => `[${m.role}]\n${getMessageDisplayText(m)}`)
         .join('\n\n');
 }
 
 function getTotalTokens(messages) {
-    return messages.reduce((sum, m) => sum + m.tokens, 0);
+    return messages.reduce((sum, m) => sum + (Number(m.tokens) || 0), 0);
+}
+
+/* 记录总 token 使用建档时确定的请求级合计；测试注入等旧数据缺字段时回退到消息合计。 */
+function getRecordPromptTokens(record) {
+    if (record && Number.isFinite(record.promptTokens)) return record.promptTokens;
+    return getTotalTokens(record && Array.isArray(record.messages) ? record.messages : []);
 }
 
 /* 根据 token 总数返回区间等级（0-7）
@@ -614,6 +898,14 @@ function getTokenTier(tokens) {
         if (tokens >= TOKEN_TIER_BOUNDARIES[i]) return TOKEN_TIER_BOUNDARIES.length - i;
     }
     return 0;
+}
+
+/* 返回 Token 数字的显示类：自定义警示优先覆盖区间色；0 关闭警示后仍保留 >200K 固定红色 */
+function getTokenTierClass(tokens, warningThreshold = tokenWarningThreshold) {
+    if (warningThreshold > 0 && tokens >= warningThreshold) {
+        return 'rlog-token-tier-7 rlog-token-warning';
+    }
+    return `rlog-token-tier-${getTokenTier(tokens)}`;
 }
 
 function getRoleClass(role) {
@@ -646,6 +938,23 @@ function getContentPreview(content) {
     if (!collapsed) return '';
     /* 200 字符为安全上限，视觉省略交给 CSS */
     return collapsed.length > 200 ? collapsed.slice(0, 200) + '…' : collapsed;
+}
+
+/* 消息标题栏 token 文本：Response 没有实际生成内容时显示占位，避免失败原因自身看起来像输出。
+   tokenPrecise 为 true 表示使用了 ST 原生分词器，不显示 ~ 估算标记。 */
+function getMessageTokenText(msg) {
+    if (msg && msg.role === 'response' && msg.hasOutput === false) return TOKEN_COUNT_PLACEHOLDER;
+    const tokenPrefix = msg && msg.tokenPrecise ? '' : '~';
+    const tokens = msg && Number.isFinite(msg.tokens) ? msg.tokens : 0;
+    return `${tokenPrefix}${tokens} tokens`;
+}
+
+/* 单条消息是否提供独立阅读入口；Response 无实际输出时即使有异常 token 也不显示 */
+function shouldOfferMessageRead(msg) {
+    if (!msg || (msg.role === 'response' && msg.hasOutput === false)) return false;
+    if (msg.forceReadEntry === true) return true;
+    const tokens = Number(msg.tokens);
+    return Number.isFinite(tokens) && tokens >= MESSAGE_READ_TOKEN_THRESHOLD;
 }
 
 function escapeHtml(str) {
@@ -747,20 +1056,29 @@ function isOuterFastPathUrl(url) {
         && (path.startsWith('/api/') || path.startsWith('/assets/') || path.startsWith('/backgrounds/')));
 }
 
+/* 检查对象是否具有自有且可枚举的字段。 */
+function hasEnumerableOwnProperty(obj, key) {
+    return Object.prototype.propertyIsEnumerable.call(obj, key);
+}
+
+/* 检查固定的辅助生成字段。 */
 function hasGenerationRequestHints(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-    return Object.keys(body).some(k => AI_GENERATION_BODY_KEYS.has(k));
+    requestPipelineStats.hintScans++;
+    for (const key of AI_GENERATION_BODY_KEYS) {
+        if (hasEnumerableOwnProperty(body, key)) return true;
+    }
+    return false;
 }
 
 /* 严格验证一个对象是否为标准 AI 消息
    这里有意只接受 role + content，避免把 ST 内部聊天记录、角色卡或系统加载数据误判为生成请求。 */
 function isAiMessageObject(obj) {
     if (!obj || typeof obj !== 'object') return false;
-    const keys = Object.keys(obj);
-
-    if (keys.some(k => ST_INTERNAL_MSG_KEYS.has(k))) return false;
-
-    if (!keys.includes('role') || !keys.includes('content')) return false;
+    for (const key of ST_INTERNAL_MSG_KEYS) {
+        if (hasEnumerableOwnProperty(obj, key)) return false;
+    }
+    if (!hasEnumerableOwnProperty(obj, 'role') || !hasEnumerableOwnProperty(obj, 'content')) return false;
 
     const role = typeof obj.role === 'string' ? obj.role.toLowerCase().trim() : '';
     if (!['system', 'user', 'assistant', 'tool', 'function', 'developer', 'model', 'human'].includes(role)) return false;
@@ -771,74 +1089,275 @@ function isAiMessageObject(obj) {
     return false;
 }
 
-function isGeminiContentObject(obj) {
-    if (!obj || typeof obj !== 'object') return false;
-    const keys = Object.keys(obj);
-    if (keys.some(k => ST_INTERNAL_MSG_KEYS.has(k))) return false;
-    if (!('parts' in obj) || !Array.isArray(obj.parts) || obj.parts.length === 0) return false;
-
-    return obj.parts.some(part => {
-        if (!part || typeof part !== 'object') return false;
-        return typeof part.text === 'string' && part.text.length > 0;
-    });
+/* 解析 messages 消息数组；没有有效消息时返回 null。 */
+function parseMessagesBody(messageList) {
+    requestPipelineStats.messageParseCalls++;
+    const messages = [];
+    for (const m of messageList) {
+        if (!isAiMessageObject(m)) continue;
+        const { content, formattedContent } = splitMessageContent(m.content);
+        if (content || formattedContent) {
+            messages.push({
+                role: normalizeRole(m.role),
+                content,
+                tokens: 0,
+                collapsed: true,
+                ...(formattedContent !== content ? { formattedContent } : {}),
+            });
+        }
+    }
+    return messages.length > 0 ? messages : null;
 }
 
-/* 判断请求体是否为 AI 生成请求：结构识别为主，URL 与生成参数辅助过滤（排除 ST 内部接口）。
-   检查顺序由便宜到昂贵：类型校验 → URL 排除 → 顶层 key 扫描 → 数组逐元素校验。 */
-function isAiRequestBody(body, requestUrl) {
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+/* 解析 chat 消息数组，只接受字符串 content。 */
+function parseChatBody(chatList) {
+    requestPipelineStats.messageParseCalls++;
+    const messages = [];
+    for (const m of chatList) {
+        if (!isAiMessageObject(m)) continue;
+        if (typeof m.content === 'string' && m.content) {
+            messages.push({
+                role: normalizeRole(m.role),
+                content: m.content,
+                tokens: 0,
+                collapsed: true,
+            });
+        }
+    }
+    return messages.length > 0 ? messages : null;
+}
 
-    /* URL 明确排除（字符串索引匹配，不用遍历数组） */
-    if (isExplicitNonGenerationUrl(requestUrl)) return false;
+/* 解析 Gemini contents[].parts；顶层 text 不识别。 */
+function parseGeminiBody(contentsList) {
+    requestPipelineStats.messageParseCalls++;
+    const messages = [];
+    for (const content of contentsList) {
+        if (!content || typeof content !== 'object') continue;
+        let hasInternalField = false;
+        for (const key of ST_INTERNAL_MSG_KEYS) {
+            if (hasEnumerableOwnProperty(content, key)) {
+                hasInternalField = true;
+                break;
+            }
+        }
+        if (hasInternalField) continue;
+        if (!Array.isArray(content.parts) || content.parts.length === 0) continue;
+        const contentData = splitMessageContent(content.parts);
+        if (contentData.content || contentData.formattedContent) {
+            messages.push({
+                role: normalizeRole(content.role || 'user'),
+                content: contentData.content,
+                tokens: 0,
+                collapsed: true,
+                ...(contentData.formattedContent !== contentData.content
+                    ? { formattedContent: contentData.formattedContent }
+                    : {}),
+            });
+        }
+    }
+    return messages.length > 0 ? messages : null;
+}
 
+/* 将 prompt 转换为一条 user 消息。 */
+function parsePromptBody(prompt) {
+    requestPipelineStats.messageParseCalls++;
+    return [{
+        role: 'user',
+        content: prompt,
+        tokens: 0,
+        collapsed: false,
+    }];
+}
+
+/* 分析 AI 请求体，返回协议与消息数组；不计算 Token。 */
+function analyzeAiBody(body, requestUrl) {
+    requestPipelineStats.analyzeCalls++;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    if (isExplicitNonGenerationUrl(requestUrl)) return null;
+
+    let messagesValue;
+    let chatValue;
+    let contentsValue;
+    let systemValue;
+    let promptValue;
+    try {
+        /* 五个候选字段各读取一次。 */
+        messagesValue = body.messages;
+        chatValue = body.chat;
+        contentsValue = body.contents;
+        systemValue = body.system;
+        promptValue = body.prompt;
+    } catch (e) {
+        return null;
+    }
+
+    const hasMessages = Array.isArray(messagesValue) && messagesValue.length > 0;
+    const hasChat = Array.isArray(chatValue) && chatValue.length > 0;
+    const hasContents = Array.isArray(contentsValue) && contentsValue.length > 0;
+    const hasSystem = typeof systemValue === 'string' && systemValue.length > 0;
+    const hasPrompt = typeof promptValue === 'string' && promptValue.length > 0;
     const generationUrl = isPotentialGenerationUrl(requestUrl);
-    const hasHints = hasGenerationRequestHints(body);
 
-    /* 既不是生成 URL 也没有生成参数特征时，只在顶层存在消息容器字段的情况下继续：
-       放行纯文本补全，同时避免昂贵的逐元素校验 */
-    if (!generationUrl && !hasHints) {
-        const hasMessagesArray = Array.isArray(body.messages) && body.messages.length > 0;
-        const hasChatArray = Array.isArray(body.chat) && body.chat.length > 0;
-        const hasContentsArray = Array.isArray(body.contents) && body.contents.length > 0;
-        const hasSystemPrompt = typeof body.system === 'string' && body.system.length > 0;
-        const hasPlainPrompt = typeof body.prompt === 'string' && body.prompt.length > 0;
+    /* 没有非空结构候选时，仅放行 prompt。 */
+    if (!hasMessages && !hasChat && !hasContents && !hasSystem) {
+        return hasPrompt ? { protocol: 'prompt', messages: parsePromptBody(promptValue) } : null;
+    }
+    if (!generationUrl && !hasGenerationRequestHints(body)) return null;
 
-        if (!hasMessagesArray && !hasChatArray && !hasContentsArray && !hasSystemPrompt && !hasPlainPrompt) {
-            return false;
+    /* messages 优先；非空 messages 无有效消息时不回退其它格式。 */
+    if (hasMessages) {
+        const messages = parseMessagesBody(messagesValue);
+        return messages ? { protocol: 'messages', messages } : null;
+    }
+    if (hasChat) {
+        const messages = parseChatBody(chatValue);
+        if (messages) return { protocol: 'chat', messages };
+    }
+    if (hasContents) {
+        const messages = parseGeminiBody(contentsValue);
+        if (messages) return { protocol: 'contents', messages };
+    }
+    if (hasPrompt) {
+        return { protocol: 'prompt', messages: parsePromptBody(promptValue) };
+    }
+    return null;
+}
+
+/* 返回 unsupported 正文类型的原因；null 表示按 structured-object 处理。 */
+function getUnsupportedFetchBodyReason(value) {
+    if (value === '') return 'empty-body';
+    if (Array.isArray(value)) return 'array-body';
+    if (typeof value !== 'object') return 'non-object-body';
+    let tag = '';
+    try {
+        tag = Object.prototype.toString.call(value);
+    } catch (e) {
+        return 'body-classification-failed';
+    }
+    if (tag === '[object Blob]' || tag === '[object File]') return 'blob-body';
+    if (tag === '[object FormData]') return 'form-data-body';
+    if (tag === '[object URLSearchParams]') return 'url-search-params-body';
+    if (tag === '[object ArrayBuffer]') return 'array-buffer-body';
+    if (tag === '[object DataView]' || tag === '[object TypedArray]') return 'typed-array-body';
+    if (tag === '[object ReadableStream]') return 'readable-stream-body';
+    try {
+        if (ArrayBuffer.isView(value)) return 'typed-array-body';
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
+/* 提取 Fetch 正文来源描述。 */
+function readFetchBodySource(input, init) {
+    let body;
+    try {
+        body = init ? init.body : undefined;
+    } catch (e) {
+        return {
+            state: 'unsupported',
+            origin: 'init-string',
+            value: null,
+            valuePromise: null,
+            hasRawText: false,
+            unsupportedReason: 'body-getter-failed',
+        };
+    }
+
+    if (body === undefined || body === null) {
+        if (isRequestLike(input)) {
+            let valuePromise;
+            try {
+                const clonedRequest = input.clone();
+                valuePromise = clonedRequest.text()
+                    .then((text) => {
+                        requestPipelineStats.requestTextReads++;
+                        return typeof text === 'string' ? text : null;
+                    })
+                    .catch(() => null);
+            } catch (e) {
+                valuePromise = Promise.resolve(null);
+            }
+            return {
+                state: 'text',
+                origin: 'request-text',
+                value: null,
+                valuePromise,
+                hasRawText: false,
+                unsupportedReason: null,
+            };
         }
+        return {
+            state: 'none',
+            origin: 'init-string',
+            value: null,
+            valuePromise: null,
+            hasRawText: false,
+            unsupportedReason: null,
+        };
+    }
 
-        if (hasPlainPrompt && !hasMessagesArray && !hasChatArray && !hasContentsArray && !hasSystemPrompt) {
-            /* 纯文本补全场景放行（由 parseFetchRequestBody 中单独处理） */
-            return true;
+    if (typeof body === 'string') {
+        if (body.length === 0) {
+            return {
+                state: 'unsupported',
+                origin: 'init-string',
+                value: body,
+                valuePromise: null,
+                hasRawText: false,
+                unsupportedReason: 'empty-body',
+            };
         }
-
-        /* 有数组但没有生成特征，大概率是 ST 内部数据加载 */
-        return false;
+        return {
+            state: 'text',
+            origin: 'init-string',
+            value: body,
+            valuePromise: null,
+            hasRawText: true,
+            unsupportedReason: null,
+        };
     }
 
-    const looksLikeGeneration = generationUrl || hasHints;
-
-    if (typeof body.system === 'string' && Array.isArray(body.messages) && body.messages.length > 0) {
-        return looksLikeGeneration && body.messages.some(isAiMessageObject);
+    const unsupportedReason = getUnsupportedFetchBodyReason(body);
+    if (unsupportedReason) {
+        return {
+            state: 'unsupported',
+            origin: 'init-string',
+            value: body,
+            valuePromise: null,
+            hasRawText: false,
+            unsupportedReason,
+        };
     }
 
-    if (Array.isArray(body.messages) && body.messages.length > 0) {
-        return looksLikeGeneration && body.messages.some(isAiMessageObject);
-    }
+    return {
+        state: 'structured-object',
+        origin: 'structured-object',
+        value: body,
+        valuePromise: null,
+        hasRawText: false,
+        unsupportedReason: null,
+    };
+}
 
-    if (Array.isArray(body.chat) && body.chat.length > 0) {
-        return looksLikeGeneration && body.chat.some(isAiMessageObject);
+/* 提取 XHR 字符串正文来源描述。 */
+function readXhrBodySource(body) {
+    if (typeof body !== 'string' || !body) {
+        return {
+            state: 'none',
+            origin: 'xhr-text',
+            value: null,
+            valuePromise: null,
+            hasRawText: false,
+            unsupportedReason: null,
+        };
     }
-
-    if (Array.isArray(body.contents) && body.contents.length > 0) {
-        return looksLikeGeneration && body.contents.some(isGeminiContentObject);
-    }
-
-    if (typeof body.prompt === 'string' && body.prompt.length > 0) {
-        return true;
-    }
-
-    return false;
+    return {
+        state: 'text',
+        origin: 'xhr-text',
+        value: body,
+        valuePromise: null,
+        hasRawText: true,
+        unsupportedReason: null,
+    };
 }
 
 /* ── 信封式代理请求解包 ─────────────────── */
@@ -856,6 +1375,7 @@ function rememberEnvelopeResult(hit, reason, urlIndex, bodyIndex) {
 /* 解析请求文本为 JSON 对象（数组/标量/非法 JSON 一律返回 null，不抛错） */
 function parseJsonText(text) {
     if (typeof text !== 'string' || !text) return null;
+    requestPipelineStats.jsonParses++;
     try {
         const parsed = JSON.parse(text);
         return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : null;
@@ -875,32 +1395,29 @@ function normalizeEnvelopeBody(value) {
     return null;
 }
 
-/* 按信封形状解包一次请求（纯函数，只读入参；不递归、不搜索内层对象、一次请求最多命中一组）：
-   输入 方法 + 原始请求文本 → { effectiveUrl, effectiveBody, viaProxyEnvelope } 或 null（不是信封）。
-   闸门顺序：G1 方法 → G3「URL 形状」文本预筛 → G4/G7 body 取值 → G9 顶层确定性枚举 →
-   G6① 内层须为完整 http(s) 绝对地址 → G5 复用现有请求体校验（不认字段名，只认值）。 */
-function resolveRequestEnvelope(method, rawText) {
-    /* G1：只处理写方法（与现有拦截一致） */
+/* 解包一层信封请求；只处理写方法和完整的 http(s) 内层地址。 */
+function resolveRequestEnvelope(method, rawText, parsedOuter = null, outerAlreadyParsed = false) {
+    /* 只处理写方法。 */
     const upperMethod = typeof method === 'string' ? method.toUpperCase() : '';
     if (upperMethod !== 'POST' && upperMethod !== 'PUT' && upperMethod !== 'PATCH') {
         rememberEnvelopeResult(false, 'method-not-writable');
         return null;
     }
 
-    /* G3：廉价文本预筛 —— 原始文本里必须出现「URL 形状」命中，未命中不解析 JSON */
+    /* 先用 URL 形状预筛原文。 */
     if (typeof rawText !== 'string' || !rawText || !ENVELOPE_URL_SHAPE_RE.test(rawText)) {
         rememberEnvelopeResult(false, 'url-shape-miss');
         return null;
     }
 
-    const outer = parseJsonText(rawText);
+    requestPipelineStats.envelopeParses++;
+    const outer = outerAlreadyParsed ? parsedOuter : parseJsonText(rawText);
     if (!outer) {
         rememberEnvelopeResult(false, 'outer-not-object');
         return null;
     }
 
-    /* G9：只在外层顶层自有可枚举字段中枚举（Object.keys 顺序）；URL 候选外循环、
-       body 候选内循环，命中第一组同时满足 G6①/G5 的组合即停。 */
+    /* 按 Object.keys 顺序匹配顶层 URL 与正文候选。 */
     const keys = Object.keys(outer);
     let sawUrlCandidate = false;
     for (let urlIndex = 0; urlIndex < keys.length; urlIndex++) {
@@ -908,16 +1425,22 @@ function resolveRequestEnvelope(method, rawText) {
         if (typeof urlCandidate !== 'string' || !urlCandidate) continue;
         if (!isPotentialGenerationUrl(urlCandidate)) continue;
         sawUrlCandidate = true;
-        /* G6①：内层目标地址必须是完整的 http(s) 绝对地址（排除 ST 内部相对路径） */
+        /* 内层地址必须是完整的 http(s) 地址。 */
         if (!/^https?:\/\//i.test(urlCandidate)) continue;
         for (let bodyIndex = 0; bodyIndex < keys.length; bodyIndex++) {
-            if (bodyIndex === urlIndex) continue; /* 同一字段不能同时充当两种角色 */
+            if (bodyIndex === urlIndex) continue;
             const innerBody = normalizeEnvelopeBody(outer[keys[bodyIndex]]);
             if (!innerBody) continue;
-            /* G5：内层复用现有全部校验（最终要求存在真正的 role/content 消息数组） */
-            if (!isAiRequestBody(innerBody, urlCandidate)) continue;
+            /* 内层正文使用统一分析器。 */
+            const analysis = analyzeAiBody(innerBody, urlCandidate);
+            if (!analysis) continue;
             rememberEnvelopeResult(true, 'hit', urlIndex, bodyIndex);
-            return { effectiveUrl: urlCandidate, effectiveBody: innerBody, viaProxyEnvelope: true };
+            return {
+                effectiveUrl: urlCandidate,
+                effectiveBody: innerBody,
+                viaProxyEnvelope: true,
+                analysis,
+            };
         }
     }
 
@@ -925,50 +1448,87 @@ function resolveRequestEnvelope(method, rawText) {
     return null;
 }
 
-/* 统一请求判定（fetch 与 XHR 共用）：外层判定通过 → 按外层记录（不再解包）；外层判定不通过
-   （含被快速通道跳过）→ 尝试信封解包。两者互斥，一条请求最多产出一条记录。
-   @param {object} capture { requestUrl, method, rawText, getBody, context }
-     getBody: 惰性取外层请求体的函数（返回 object|null；信封路径不需要时就省掉这次解析）
-     context: 来源判定上下文（RQ-32），外层判定通过时补上 bodyObject / rawText 一并下传
-   @returns {{effectiveUrl, effectiveBody, viaProxyEnvelope, context?}|null} */
-function decideCapturedRequest(capture) {
-    if (!isOuterFastPathUrl(capture.requestUrl)) {
-        let outerBody = null;
+/* 为 Fetch/XHR 正文候选生成 RequestPlan。 */
+async function planCapturedRequest(candidate) {
+    const descriptor = candidate && candidate.body;
+    if (!descriptor || descriptor.state === 'none' || descriptor.state === 'unsupported') return null;
+
+    let body = null;
+    let rawText = null;
+    let bodyParsed = false;
+    if (descriptor.state === 'structured-object') {
+        body = descriptor.value;
+        bodyParsed = true;
+    } else if (descriptor.state === 'text') {
+        rawText = typeof descriptor.value === 'string'
+            ? descriptor.value
+            : (descriptor.valuePromise ? await descriptor.valuePromise.catch(() => null) : null);
+        if (typeof rawText !== 'string') return null;
+        body = parseJsonText(rawText);
+        bodyParsed = true;
+    }
+    if (!body && !rawText) return null;
+
+    const sourceContext = Object.assign({}, candidate.context || {}, {
+        bodyObject: body,
+        rawText,
+    });
+    let effectiveUrl = candidate.requestUrl;
+    let effectiveBody = body;
+    let analysis = null;
+    let viaProxyEnvelope = false;
+
+    if (body && !isOuterFastPathUrl(candidate.requestUrl)) {
         try {
-            outerBody = capture.getBody ? capture.getBody() : null;
+            analysis = analyzeAiBody(body, candidate.requestUrl);
         } catch (e) {
-            outerBody = null;
-        }
-        if (outerBody && isAiRequestBody(outerBody, capture.requestUrl)) {
-            return {
-                effectiveUrl: capture.requestUrl,
-                effectiveBody: outerBody,
-                viaProxyEnvelope: false,
-                /* 请求上下文：补上外层请求体对象引用（与保存的公开数据引用同一时，E2 直接成立） */
-                context: Object.assign({}, capture.context || {}, {
-                    bodyObject: outerBody,
-                    rawText: (typeof capture.rawText === 'string') ? capture.rawText : (capture.context ? capture.context.rawText : null),
-                }),
-            };
+            analysis = null;
         }
     }
-    return resolveRequestEnvelope(capture.method, capture.rawText);
+
+    if (!analysis && typeof rawText === 'string' && rawText) {
+        const envelope = resolveRequestEnvelope(candidate.method, rawText, body, bodyParsed);
+        if (envelope) {
+            effectiveUrl = envelope.effectiveUrl;
+            effectiveBody = envelope.effectiveBody;
+            analysis = envelope.analysis;
+            viaProxyEnvelope = true;
+        }
+    }
+    if (!analysis || !effectiveBody) return null;
+
+    const plan = {
+        captureId: candidate.captureId != null ? candidate.captureId : null,
+        requestStartedAt: candidate.requestStartedAt,
+        effectiveUrl,
+        body: effectiveBody,
+        rawText,
+        hasRawText: typeof rawText === 'string' && rawText.length > 0,
+        bodyOrigin: viaProxyEnvelope
+            ? 'envelope-object'
+            : (descriptor.origin === 'init-string'
+                ? 'json-string'
+                : descriptor.origin),
+        protocol: analysis.protocol,
+        messages: analysis.messages,
+        viaProxyEnvelope,
+        sourceContext,
+    };
+    lastRequestPlanSummary = {
+        effectiveUrlIsGeneration: isPotentialGenerationUrl(effectiveUrl),
+        protocol: plan.protocol,
+        messageCount: plan.messages.length,
+        bodyOrigin: plan.bodyOrigin,
+        hasRawText: plan.hasRawText,
+        viaProxyEnvelope: plan.viaProxyEnvelope,
+    };
+    return plan;
 }
 
 /* ── 请求来源识别（证据分层判定，RQ-32） ───────── */
 
-/* 【判定顺序（固定，定义见 requirements.md「RQ-32 附」）】
-   0 现有请求体校验 + 信封解包（唯一可前置终止的排除项，RQ-31）
-   → 1 E1 可中止句柄对象同一（仅 fetch 且仅流式）
-   → 2 E2 请求体来自本轮主生成的公开数据（每轮只认领第一条命中的请求）
-   → 3 通用排除 X2（生成类型字段异常）/ X3（API 身份与主配置不一致）/ X4（不在任何主生成轮次内）/ X5（同源 iframe）
-   → 4 E3 位置备用证据（公开数据事件之后、本轮结束之前，且本轮只出现这一条候选写请求）
-   → 5 旧兜底：原生入口点击 / 回车 + 5 秒窗口 + 生成开始事件的类型保底（保留不删，最低优先级）
-   → 6 其余一律「插件」（默认）
-
-   【顺序理由（务必保留）】X3 在「拦截瞬间」比对，而插件可能在生成过程中临时改动主 API 配置（临时切模型 /
-   换渠道），此时真主请求与当前配置不一致；排除项若前置终止会把真主请求标成插件。E2 是同源判定，
-   插件请求不可能满足，故正向证据先跑无风险。 */
+/* 来源判定顺序：E1 → E2 → X2-X5 → E3 → 旧兜底 → 默认插件。
+   E2 必须位于 X3 之前，避免临时切换主 API 配置时误判。 */
 
 /* 来源判定用到的规则名（供调试口 __rlogDebug.getLastSourceDecision 与文档对照，不参与展示）：
    envelope / E1 / E2 / X2 / X3 / X4 / X5 / E3 / legacy / default / E3-revoked / correct */
@@ -1168,28 +1728,25 @@ function isSameSourceMessages(messages, promptArray) {
     return true;
 }
 
-/* E2：请求体来自本轮主生成的公开数据。必须保存引用、在拦截瞬间现场序列化比对（不得提前序列化，
-   中间可能被其他监听者原地修改）；ST 是「先序列化、紧接着发送」，两步之间不插入其他代码。
-   两条路径：
-   - 非聊天补全主 API：公开数据载荷就是请求体对象 → 对象引用相同或现场序列化完全相等
-   - 聊天补全主 API：请求体对象来自「请求体即将发出」事件 → 现场序列化相等，且 messages 与本轮提示词数组同源
-   比对不上即降级，交后续层处理。
-   @param {object|null} context @returns {boolean} */
-function matchDataSameSource(context) {
-    const pass = getActiveGenerationPass();
-    if (!pass || pass.e2Claimed) return false;
-    const bodyObject = context ? context.bodyObject : null;
-    const rawText = context ? context.rawText : null;
+/* E2：请求体与入口时保存的主生成公开数据同源。
+   @param {object} plan @returns {boolean} */
+function matchDataSameSource(plan) {
+    const context = plan && plan.sourceContext;
+    const pass = context && context.generationPass;
+    const evidence = context && context.passEvidence;
+    if (!pass || !evidence || pass.e2Claimed) return false;
+    const bodyObject = plan.body;
+    const rawText = plan.rawText;
 
-    if (pass.bodyRef) {
-        if (bodyObject && bodyObject === pass.bodyRef) return true;
-        const serialized = stringifyRef(pass.bodyRef);
+    if (evidence.bodyRef) {
+        if (bodyObject && bodyObject === evidence.bodyRef) return true;
+        const serialized = stringifyRef(evidence.bodyRef);
         if (serialized !== null && typeof rawText === 'string' && rawText === serialized) return true;
     }
-    if (pass.chatBodyRef) {
-        const serialized = stringifyRef(pass.chatBodyRef);
+    if (evidence.chatBodyRef) {
+        const serialized = stringifyRef(evidence.chatBodyRef);
         if (serialized !== null && typeof rawText === 'string' && rawText === serialized
-            && isSameSourceMessages(pass.chatBodyRef.messages, pass.promptArray)) {
+            && isSameSourceMessages(evidence.chatBodyRef.messages, evidence.promptArray)) {
             return true;
         }
     }
@@ -1218,33 +1775,21 @@ function isStChatCompletionEndpoint(url) {
     return getUrlPathForMatch(url) === ST_CHAT_COMPLETION_ENDPOINT;
 }
 
-/* X3：API 身份与主配置一致性（仅聊天补全形状的请求体）。拦截瞬间比对四项：
-   服务商 / 请求地址 / 渠道地址（自定义地址、反代）/ 模型。任一项不一致即「插件」；
-   **四项一致不构成原生证据**（故不参与正向判定，只用于排除）。
-   @param {object} body @param {string} requestUrl @returns {boolean} */
-function isApiIdentityConsistent(body, requestUrl) {
-    const stCtx = getStContextSafe();
-    const settings = stCtx && stCtx.chatCompletionSettings;
-    if (!settings) return false; /* 拿不到主配置 → 无法证明一致 */
+/* X3：聊天补全请求体与入口时的服务商、请求地址、渠道地址和模型是否一致。
+   @param {object} body @param {string} requestUrl @param {object|null} snapshot @returns {boolean} */
+function isApiIdentityConsistent(body, requestUrl, snapshot) {
+    if (!snapshot || !snapshot.available) return false;
 
     /* ① 服务商 */
-    if (normalizeIdentityValue(body.chat_completion_source) !== normalizeIdentityValue(settings.chat_completion_source)) {
+    if (normalizeIdentityValue(body.chat_completion_source) !== snapshot.chatCompletionSource) {
         return false;
     }
     /* ② 请求地址（ST 聊天补全生成端点） */
     if (!isStChatCompletionEndpoint(requestUrl)) return false;
     /* ③ 渠道地址（自定义地址 / 反代） */
-    if (getChannelAddress(body) !== getChannelAddress(settings)) return false;
+    if (getChannelAddress(body) !== snapshot.channelAddress) return false;
     /* ④ 模型 */
-    let expectedModel = '';
-    try {
-        expectedModel = (typeof stCtx.getChatCompletionModel === 'function')
-            ? stCtx.getChatCompletionModel(settings)
-            : settings.model;
-    } catch (e) {
-        expectedModel = settings.model;
-    }
-    if (normalizeIdentityValue(body.model) !== normalizeIdentityValue(expectedModel)) return false;
+    if (normalizeIdentityValue(body.model) !== snapshot.model) return false;
 
     return true;
 }
@@ -1282,63 +1827,56 @@ function forfeitPositionEvidence(pass) {
     revokePositionEvidence(pass);
 }
 
-/* E3 位置证据的最终确认：判定（拦截时）与建档（异步、要等 token 计算）是两步，中间本轮可能已经
-   出现第二条候选写请求——此时位置证据不成立，直接按「插件」建档，避免先「原生」再退回的可见抖动。 */
-function finalizePositionEvidenceSource(source) {
+/* 建档前确认 E3 位置证据仍然有效。 */
+function finalizePositionEvidenceSource(source, pass = null) {
     if (!source || source.evidence !== 'position') return source;
     const forfeitedByLive = !!(generationPass && generationPass.id === source.passId
         && generationPass.candidateCount >= 2);
-    if (forfeitedByLive || lastForfeitedPositionPassId === source.passId) {
+    const forfeitedByEntryPass = !!(pass && pass.id === source.passId && pass.candidateCount >= 2);
+    if (forfeitedByLive || forfeitedByEntryPass || lastForfeitedPositionPassId === source.passId) {
         lastExclusionReason = 'E3-revoked: 本轮出现多条候选写请求，位置证据作废';
         return makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'E3-revoked');
     }
     return source;
 }
 
-/* E3 候选计数：本轮内、公开数据事件（本轮起点）之后的每一个候选写请求都计数，信封解包命中的同样算；
-   出现两条及以上即放弃位置证据。为避免重复计数，只由 processCapturedBody 在通过请求体校验后调用一次。 */
-function notePassWriteCandidate() {
-    const pass = getActiveGenerationPass();
+/* 记录一轮内的候选写请求；第二条候选出现时作废 E3。 */
+function notePassWriteCandidate(pass) {
     if (!pass || pass.dataTime == null) return;
     pass.candidateCount++;
     if (pass.candidateCount >= 2) forfeitPositionEvidence(pass);
 }
 
-/* 旧兜底（最低优先级，保留不删）：原生入口点击 / 回车 + 5 秒窗口 + 生成开始事件的类型保底。
-   不立即消费原生入口（重新生成 / 备选回复等操作中可能有中间请求），标记在窗口过期后自动清除。
-   @returns {object|null} 命中返回来源对象，否则 null */
-function legacyNativeIntentSource() {
+/* 旧原生入口时间窗兜底；需保留为最低优先级来源证据。 */
+function legacyNativeIntentSource(snapshot) {
     const now = Date.now();
-    if (lastNativeIntent && (now - lastNativeIntent.timestamp) <= NATIVE_INTENT_WINDOW_MS) {
-        return makeSource('native', `原生请求-${lastNativeIntent.target}`, 'legacy');
-    }
-    if (lastNativeIntent && (now - lastNativeIntent.timestamp) > NATIVE_INTENT_WINDOW_MS) {
-        lastNativeIntent = null;
+    if (snapshot && (now - snapshot.timestamp) <= NATIVE_INTENT_WINDOW_MS) {
+        return makeSource('native', `原生请求-${snapshot.target}`, 'legacy');
     }
     return null;
 }
 
-/* 请求来源分层判定入口（固定顺序见本节顶部注释；顺序理由务必保留）
-   @param {object} body 已通过校验的请求体对象
-   @param {string} requestUrl 生效请求地址
-   @param {object|null} context 请求上下文 { rawText, bodyObject, method, topWindow, signal, streamingSignal, fromXhr }
+/* 判定 RequestPlan 的请求来源。
+   @param {object} plan
    @returns {object} 来源对象（原生 / 插件） */
-function decideRequestSource(body, requestUrl, context) {
-    const ctxInfo = context || {};
-    const pass = getActiveGenerationPass();
+function decideRequestSource(plan) {
+    const body = plan.body;
+    const requestUrl = plan.effectiveUrl;
+    const ctxInfo = plan.sourceContext || {};
+    const pass = ctxInfo.generationPass;
 
-    /* 1 E1 可中止句柄对象同一（仅 fetch 且仅流式）→ 原生 */
+    /* E1 */
     if (matchHandleIdentity(ctxInfo)) {
         return noteSourceDecision(makeSource('native', '原生请求-流式句柄', 'E1'), '请求携带的信号对象与当前流式处理器实例一致');
     }
 
-    /* 2 E2 请求体来自本轮主生成的公开数据（主判据；每轮只认领第一条命中的请求）→ 原生 */
-    if (matchDataSameSource(ctxInfo)) {
+    /* E2 */
+    if (matchDataSameSource(plan)) {
         if (pass) pass.e2Claimed = true;
         return noteSourceDecision(makeSource('native', '原生请求-数据同源', 'E2'), '请求体与本轮公开数据同源');
     }
 
-    /* 3 通用排除项（仅信封可前置终止，已在入口完成）→ 插件 */
+    /* X2 / X3 */
     if (isChatCompletionShaped(body)) {
         if (!Object.prototype.hasOwnProperty.call(body, 'type')) {
             return noteSourceDecision(makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'X2'), '聊天补全请求体缺 type 字段（体不是 ST 构造的）');
@@ -1346,7 +1884,7 @@ function decideRequestSource(body, requestUrl, context) {
         if (body.type === 'quiet') {
             return noteSourceDecision(makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'X2'), 'type === quiet（安静生成，非主剧情请求）');
         }
-        if (!isApiIdentityConsistent(body, requestUrl)) {
+        if (!isApiIdentityConsistent(body, requestUrl, ctxInfo.apiIdentitySnapshot)) {
             return noteSourceDecision(makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'X3'), 'API 身份与主配置不一致（服务商 / 请求地址 / 渠道地址 / 模型）');
         }
     }
@@ -1357,7 +1895,7 @@ function decideRequestSource(body, requestUrl, context) {
         return noteSourceDecision(makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'X5'), '来自同源 iframe（非顶层窗口）');
     }
 
-    /* 4 E3 位置备用证据（公开数据事件之后、本轮结束之前，且本轮只出现这一条候选写请求）→ 原生 */
+    /* E3 */
     if (pass && pass.dataTime != null && pass.candidateCount === 1) {
         const result = makeSource('native', '原生请求-位置证据', 'E3');
         result.evidence = 'position';
@@ -1365,11 +1903,11 @@ function decideRequestSource(body, requestUrl, context) {
         return noteSourceDecision(result, '公开数据事件之后、本轮唯一候选写请求');
     }
 
-    /* 5 旧兜底（最低优先级）→ 原生 */
-    const legacy = legacyNativeIntentSource();
+    /* 旧兜底 */
+    const legacy = legacyNativeIntentSource(ctxInfo.nativeIntentSnapshot);
     if (legacy) return noteSourceDecision(legacy, '旧时间窗兜底（原生入口点击 / 回车）');
 
-    /* 6 其余 → 插件（默认） */
+    /* 默认插件 */
     return noteSourceDecision(makeSource('plugin', SOURCE_PLUGIN_DEFAULT_DETAIL, 'default'), '默认插件');
 }
 
@@ -1512,8 +2050,52 @@ function installSourceCorrectionTracking() {
     }
 }
 
-/* fetch 请求的来源判定上下文（拦截瞬间同步读取；XHR 侧由 beginXhrCapture 单独构造） */
-function buildFetchRequestContext(realmWindow, input, init, method) {
+/* 保存入口时的 API 身份快照。 */
+function buildApiIdentitySnapshot() {
+    const stCtx = getStContextSafe();
+    const settings = stCtx && stCtx.chatCompletionSettings;
+    if (!settings) return { available: false };
+    let expectedModel = '';
+    try {
+        expectedModel = (typeof stCtx.getChatCompletionModel === 'function')
+            ? stCtx.getChatCompletionModel(settings)
+            : settings.model;
+    } catch (e) {
+        expectedModel = settings.model;
+    }
+    return {
+        available: true,
+        chatCompletionSource: normalizeIdentityValue(settings.chat_completion_source),
+        channelAddress: getChannelAddress(settings),
+        model: normalizeIdentityValue(expectedModel),
+    };
+}
+
+/* 构造请求入口来源上下文。 */
+function buildSourceContext(realmWindow, method, fromXhr, requestStartedAt) {
+    const pass = getActiveGenerationPass();
+    return {
+        capturedAt: requestStartedAt,
+        method,
+        topWindow: realmWindow === window,
+        fromXhr,
+        generationPass: pass,
+        passEvidence: pass ? {
+            id: pass.id,
+            dataTime: pass.dataTime,
+            bodyRef: pass.bodyRef,
+            chatBodyRef: pass.chatBodyRef,
+            promptArray: pass.promptArray,
+        } : null,
+        nativeIntentSnapshot: lastNativeIntent ? { ...lastNativeIntent } : null,
+        apiIdentitySnapshot: buildApiIdentitySnapshot(),
+        bodyObject: null,
+        rawText: null,
+    };
+}
+
+/* 构造 Fetch 请求入口上下文。 */
+function buildFetchRequestContext(realmWindow, input, init, method, requestStartedAt = Date.now()) {
     let signal = (init && init.signal) ? init.signal : null;
     if (!signal && isRequestLike(input)) {
         try { signal = input.signal || null; } catch (e) { signal = null; }
@@ -1521,15 +2103,11 @@ function buildFetchRequestContext(realmWindow, input, init, method) {
     const stCtx = getStContextSafe();
     const processor = stCtx ? stCtx.streamingProcessor : null;
     const streamingSignal = (processor && processor.abortController) ? processor.abortController.signal : null;
-    return {
-        rawText: (init && typeof init.body === 'string') ? init.body : null,
-        bodyObject: null, /* 外层判定通过时由 decideCapturedRequest 补上（对象引用相同也是 E2 证据） */
-        method,
-        topWindow: realmWindow === window,
-        fromXhr: false,
+    return Object.assign(buildSourceContext(realmWindow, method, false, requestStartedAt), {
+        rawText: null,
         signal,
         streamingSignal,
-    };
+    });
 }
 
 function rememberNativeIntent(target, source) {
@@ -1646,6 +2224,27 @@ function installSourceTracking() {
         getLastEnvelopeResult: () => lastEnvelopeResult,
         /* 回复待办区当前条目数（回归断言用：非记录类请求不应占用名额） */
         getPendingReplyCount: () => pendingReplies.size,
+        /* 请求钩子就绪状态（测试等待用）：fetch 安装标志不要求等于当前 window.fetch，
+           因为其他插件仍可在本插件之后继续包装调用链 */
+        getHookStatus: () => ({
+            fetchHookInstalled: !!currentHook,
+            windowFetchMatchesCurrentHook: !!currentHook && window.fetch === currentHook,
+            mainXhrHookInstalled: hookedXhrProtos.has(window),
+            iframeHooksInstalled,
+        }),
+        /* 正文管线计数与最近一次摘要（只含分类字段，不含正文） */
+        getRequestPipelineStats: () => ({
+            ...requestPipelineStats,
+            lastBody: lastBodyDescriptorSummary ? { ...lastBodyDescriptorSummary } : null,
+            lastPlan: lastRequestPlanSummary ? { ...lastRequestPlanSummary } : null,
+            lastFetchContext: lastFetchSourceContextSummary ? { ...lastFetchSourceContextSummary } : null,
+        }),
+        resetRequestPipelineStats: () => {
+            Object.keys(requestPipelineStats).forEach((key) => { requestPipelineStats[key] = 0; });
+            lastBodyDescriptorSummary = null;
+            lastRequestPlanSummary = null;
+            lastFetchSourceContextSummary = null;
+        },
         /* 当前主生成轮次状态与类型（只读摘要；不含请求体引用） */
         getGenerationPass: () => {
             const pass = generationPass;
@@ -1740,117 +2339,81 @@ function normalizeRole(role) {
     return mapping[r] || r;
 }
 
-/* 解析不同 AI 接口的请求体，统一提取消息列表
-   返回 null 表示无法解析（静默跳过，不产生记录） */
-function parseFetchRequestBody(json) {
-    if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+/* 识别请求内容数组里的媒体项，仅返回整理格式用的简单占位文字。
+   这里只读取最终请求体中的结构化媒体字段，不从普通文字或 base64 内容里猜测。 */
+function getMediaPlaceholder(part) {
+    if (!part || typeof part !== 'object') return '';
 
-    const messages = [];
+    const type = typeof part.type === 'string' ? part.type.toLowerCase() : '';
+    const directTypes = {
+        image: '[图片]',
+        image_url: '[图片]',
+        input_image: '[图片]',
+        video: '[视频]',
+        video_url: '[视频]',
+        input_video: '[视频]',
+        audio: '[音频]',
+        audio_url: '[音频]',
+        input_audio: '[音频]',
+        file: '[文件]',
+        file_url: '[文件]',
+        input_file: '[文件]',
+        document: '[文件]',
+    };
+    if (directTypes[type]) return directTypes[type];
 
-    /* 1. OpenAI / 兼容格式 — messages 数组 */
-    if (Array.isArray(json.messages)) {
-        for (const m of json.messages) {
-            if (!isAiMessageObject(m)) continue;
-            let content = '';
-            if (typeof m.content === 'string' && m.content) {
-                content = m.content;
-            } else if (Array.isArray(m.content)) {
-                content = m.content
-                    .filter(c => c.type === 'text' && c.text)
-                    .map(c => c.text)
-                    .join('\n');
-            }
-            if (content) {
-                messages.push({
-                    role: normalizeRole(m.role),
-                    content,
-                    tokens: 0, /* 由 computeTokensForMessages 异步计算 */
-                    collapsed: true,
-                });
-            }
-        }
+    /* 兼容未写 type、但带标准媒体字段的请求项 */
+    if (part.image_url != null) return '[图片]';
+    if (part.video_url != null) return '[视频]';
+    if (part.audio_url != null || part.input_audio != null) return '[音频]';
+    if (part.file_url != null || part.file_id != null || part.file_data != null || part.input_file != null) return '[文件]';
+
+    /* Gemini 内联媒体 / 文件引用：按 MIME 分类，其他类型统一按文件显示 */
+    const inlineData = part.inlineData || part.inline_data;
+    const fileData = part.fileData || part.file_data;
+    const dataRef = inlineData && typeof inlineData === 'object'
+        ? inlineData
+        : (fileData && typeof fileData === 'object' ? fileData : null);
+    if (dataRef) {
+        const mimeType = String(dataRef.mimeType || dataRef.mime_type || '').toLowerCase();
+        if (mimeType.startsWith('image/')) return '[图片]';
+        if (mimeType.startsWith('video/')) return '[视频]';
+        if (mimeType.startsWith('audio/')) return '[音频]';
+        return '[文件]';
     }
 
-    /* 2. chat 数组 — ST 内部事件格式（可能被 fetch 截获） */
-    if (messages.length === 0 && Array.isArray(json.chat)) {
-        for (const m of json.chat) {
-            if (!isAiMessageObject(m)) continue;
-            let content = '';
-            if (typeof m.content === 'string' && m.content) {
-                content = m.content;
-            }
-            if (content) {
-                messages.push({
-                    role: normalizeRole(m.role),
-                    content,
-                    tokens: 0,
-                    collapsed: true,
-                });
-            }
-        }
+    return '';
+}
+
+/* 把消息正文拆成两份：content 保持原文字（token 与原始数据使用），
+   formattedContent 额外保留媒体占位（分条消息、搜索与整理格式使用）。 */
+function splitMessageContent(content) {
+    if (typeof content === 'string') {
+        return { content, formattedContent: content };
+    }
+    if (!Array.isArray(content)) {
+        return { content: '', formattedContent: '' };
     }
 
-    /* 3. Google Gemini 格式 */
-    if (messages.length === 0 && Array.isArray(json.contents)) {
-        for (const c of json.contents) {
-            if (!c || typeof c !== 'object') continue;
-            const itemKeys = Object.keys(c);
-            if (itemKeys.some(k => ST_INTERNAL_MSG_KEYS.has(k))) continue;
-            let content = '';
-            if (typeof c.parts === 'object' && Array.isArray(c.parts)) {
-                content = c.parts
-                    .filter(p => typeof p.text === 'string' && p.text)
-                    .map(p => p.text)
-                    .join('\n');
-            } else if (typeof c.text === 'string') {
-                content = c.text;
-            }
-            if (content) {
-                messages.push({
-                    role: normalizeRole(c.role || 'user'),
-                    content,
-                    tokens: 0,
-                    collapsed: true,
-                });
-            }
+    const textParts = [];
+    const formattedParts = [];
+    for (const part of content) {
+        if (!part || typeof part !== 'object') continue;
+        const isTextPart = typeof part.text === 'string'
+            && (!part.type || part.type === 'text' || part.type === 'input_text');
+        if (isTextPart && part.text) {
+            textParts.push(part.text);
+            formattedParts.push(part.text);
+            continue;
         }
+        const placeholder = getMediaPlaceholder(part);
+        if (placeholder) formattedParts.push(placeholder);
     }
 
-    /* 4. Anthropic 格式 */
-    if (messages.length === 0 && typeof json.system === 'string' && Array.isArray(json.messages)) {
-        if (json.system) {
-            messages.push({
-                role: 'system',
-                content: json.system,
-                tokens: 0,
-                collapsed: true,
-            });
-        }
-        for (const m of json.messages) {
-            if (!isAiMessageObject(m)) continue;
-            if (typeof m.content === 'string' && m.content) {
-                messages.push({
-                    role: normalizeRole(m.role),
-                    content: m.content,
-                    tokens: 0,
-                    collapsed: true,
-                });
-            }
-        }
-    }
-
-    /* 5. 纯文本补全 */
-    if (messages.length === 0 && typeof json.prompt === 'string' && json.prompt.length > 0) {
-        messages.push({
-            role: 'user',
-            content: json.prompt,
-            tokens: 0,
-            collapsed: false,
-        });
-    }
-
-    if (messages.length === 0) return null;
-    return messages;
+    return {
+        content: textParts.join('\n'),
+        formattedContent: formattedParts.join('\n'),
+    };
 }
 
 /* 遮蔽原始请求体里的敏感字段（入库用）；不改动入参对象，未命中时原样返回
@@ -1868,53 +2431,60 @@ function redactSensitiveBody(body) {
     return redacted || body;
 }
 
-/* 后台异步处理已捕获的请求体（解析消息、算 token、存记录），与请求发送解耦、不阻塞网络
-   @param {object} body @param {string} requestUrl @param {number|null} captureId
-   @param {boolean} [viaProxyEnvelope=false] 是否由信封解包得到（来源强制标「插件」）
-   @param {object|null} [requestContext=null] 来源判定上下文（RQ-32：原始文本 / 请求体对象 / 是否顶层 / 信号对象）
-   @param {object|null} [simulateCtx=null] 本次模拟的捕获上下文（非空即「这条是模拟捕获」；来源固定为模拟、不参与来源判定） */
-async function processCapturedBody(body, requestUrl, captureId, viaProxyEnvelope = false, requestContext = null, simulateCtx = null) {
+/* 处理已验证的 RequestPlan。
+   @param {object} plan
+   @param {number|null} captureId
+   @param {object|null} [simulateCtx=null] 本次模拟的捕获上下文（非空即「这条是模拟捕获」；来源固定为模拟、不参与来源判定）
+   @param {number|null} [requestStartedAt=null] 请求进入拦截入口的时间（毫秒） */
+async function processCapturePlan(plan, captureId = null, simulateCtx = null, requestStartedAt = null) {
     const isSimulated = !!simulateCtx;
-    if (!body || !isAiRequestBody(body, requestUrl)) {
+    if (!plan || !plan.body || !Array.isArray(plan.messages) || plan.messages.length === 0) {
         if (isSimulated) simulateCtx.settle(null);
         return;
     }
 
-    const messages = parseFetchRequestBody(body);
-    if (!messages) {
-        if (isSimulated) simulateCtx.settle(null);
-        return;
-    }
-
+    const body = plan.body;
+    const messages = plan.messages;
     const characterName = getCurrentCharacterName();
-    /* E3 候选计数（本轮候选写请求，两条及以上即作废位置证据）：一条请求只计一次；模拟捕获不计入 */
-    if (!isSimulated) notePassWriteCandidate();
-    /* 信封解包命中（判定序 0，唯一可前置终止的排除项）：来源固定为「插件」，不做证据分层判定；
-       模拟捕获固定用模拟来源，同样不做判定 */
+    /* E3 候选计数；模拟捕获不计入。 */
+    if (!isSimulated) notePassWriteCandidate(plan.sourceContext.generationPass);
+    /* 信封请求固定为插件来源；模拟捕获固定为模拟来源。 */
     const source = isSimulated
         ? { ...SIMULATED_PROMPT_SOURCE }
-        : (viaProxyEnvelope
+        : (plan.viaProxyEnvelope
             ? noteSourceDecision(ENVELOPE_PROXY_SOURCE, '信封解包命中（RQ-31，判定终局）')
-            : decideRequestSource(body, requestUrl, requestContext));
+            : decideRequestSource(plan));
     let modelName = extractModelName(body);
-    /* 模拟记录的模型名回退：请求体里取不到时用 ST 当前模型名 */
+    /* 模拟记录缺少模型名时使用 ST 当前模型。 */
     if (isSimulated && modelName === '未知模型') modelName = getStChatCompletionModelName() || modelName;
-    /* 模拟已判失败（超时）就不再建档：分词前后各查一次，避免白算 */
+    /* 模拟已取消时不继续分词与建档。 */
     if (isSimulated && simulateCtx.canceled) {
         simulateCtx.settle(null);
         return;
     }
-    /* 用 ST 原生分词器精确计算 token（modelName 用于判断分词器是否兼容） */
-    await computeTokensForMessages(messages, modelName);
-    /* 分词期间也可能超时：同样不建档 */
+    /* 选择 OpenAI 精确分词或通用分词路径。 */
+    const stCtx = getStContextSafe();
+    const finalMessages = stCtx && stCtx.mainApi === 'openai' && Array.isArray(body.messages)
+        ? body.messages.filter(isAiMessageObject)
+        : [];
+    const canUseOpenAiPromptTokens = stCtx
+        && Array.isArray(body.messages)
+        && finalMessages.length === messages.length
+        && finalMessages.every(message => typeof message.content === 'string');
+    if (canUseOpenAiPromptTokens) {
+        await computeOpenAiPromptTokens(messages, finalMessages, modelName);
+    } else {
+        await computeTokensForMessages(messages, modelName);
+    }
+    /* 分词完成后再检查模拟是否已取消。 */
     if (isSimulated && simulateCtx.canceled) {
         simulateCtx.settle(null);
         return;
     }
-    /* captureId 用于把该请求的回复精确挂回这条记录；rawBody 入库前先遮蔽敏感字段 */
+    /* 建档并遮蔽敏感字段。 */
     const record = addRecord(characterName, messages, source, modelName, redactSensitiveBody(body), captureId,
-        { simulated: isSimulated });
-    /* 模拟捕获：兑现「记录已建好」的完成信号；没建成记录兑现空值，模拟流程按失败处理 */
+        { simulated: isSimulated, requestStartedAt, sourcePass: plan.sourceContext.generationPass });
+    /* 提交模拟捕获结果。 */
     if (isSimulated) simulateCtx.settle(record || null);
 }
 
@@ -1925,15 +2495,13 @@ function isRequestLike(input) {
     return !!(input && typeof input === 'object' && typeof input.clone === 'function' && typeof input.text === 'function');
 }
 
-/* 构造 fetch 拦截包装（主窗口与同源 iframe 共用）：每个 realm 用独立重入标记，包装内部始终调用
-   该 realm 自己的原始 fetch（跨 realm 传 Request 会抛错）。快速通道按「非写请求 → ST 内部 API →
-   才解析 body」逐级过滤；锁只保护 body 的同步捕获，originalFetch 在锁释放后立即调用，
-   分词与 addRecord 走异步，不阻塞网络请求发出。
-   外层判定不通过（含被快速通道跳过）时，异步阶段再尝试按信封形状解包（见 decideCapturedRequest）。
+/* 构造 Fetch 拦截包装。
    @param {Window} realmWindow @param {Function} getOriginalFetch @returns {Function} */
 function createFetchHook(realmWindow, getOriginalFetch) {
     let realmHookInFlight = false; /* 该 realm 的重入保护（防其他包装形成闭环） */
     return async function hookedFetch(input, init) {
+        /* 请求发起时间：在进入拦截器时同步记录，不取后续 token 计算或点击导出的时间 */
+        const requestStartedAt = Date.now();
         const originalFetch = getOriginalFetch();
 
         /* ── 模拟预览 ──
@@ -1968,68 +2536,67 @@ function createFetchHook(realmWindow, getOriginalFetch) {
             return originalFetch.apply(realmWindow, [input, init]);
         }
 
-        /* ── 快速通道 3：URL 是 ST 内部接口且不含生成端点特征 ──
-           既有的「直接跳过」保持不变：只有 body 是同步可读字符串、且文本命中「URL 形状」预筛
-           （信封式代理请求的通用特征）时才继续往下捕获，其余照旧直接透传、不解析 body。 */
+        /* ── 正文来源 ── */
         const requestUrl = getFetchRequestUrl(input);
+        let bodyDescriptor;
+        try {
+            bodyDescriptor = readFetchBodySource(input, init);
+        } catch (e) {
+            bodyDescriptor = {
+                state: 'unsupported',
+                origin: 'init-string',
+                value: null,
+                valuePromise: null,
+                hasRawText: false,
+                unsupportedReason: 'body-read-failed',
+            };
+        }
+        lastBodyDescriptorSummary = summarizeBodyDescriptor(bodyDescriptor);
+
+        /* ── 快速通道 3：ST 内部 URL ── */
         const outerFastPath = isOuterFastPathUrl(requestUrl);
-        const shapeText = (init && typeof init.body === 'string') ? init.body : null;
-        if (!simulateCapture && outerFastPath && (!shapeText || !ENVELOPE_URL_SHAPE_RE.test(shapeText))) {
+        const textValue = bodyDescriptor.state === 'text' && typeof bodyDescriptor.value === 'string'
+            ? bodyDescriptor.value
+            : '';
+        const envelopePossible = bodyDescriptor.state === 'text'
+            && (bodyDescriptor.origin === 'request-text' || ENVELOPE_URL_SHAPE_RE.test(textValue));
+        if (!simulateCapture && outerFastPath && !envelopePossible) {
             return originalFetch.apply(realmWindow, [input, init]);
         }
-        /* 回复追踪的闸门地址：外层地址被快速通道跳过时，用预筛命中的内层候选地址
-           （captureResponseForRequest 只在「地址像生成端点」时才追踪回复） */
+
+        /* 选择初始回复追踪地址。 */
         let replyGateUrl = requestUrl;
-        if (outerFastPath && shapeText) {
-            const shapeMatch = shapeText.match(ENVELOPE_URL_SHAPE_RE);
+        if (outerFastPath && textValue) {
+            const shapeMatch = textValue.match(ENVELOPE_URL_SHAPE_RE);
             if (shapeMatch) replyGateUrl = shapeMatch[0];
         }
 
-        /* ── 加锁仅保护 body 的同步捕获（不涉及 I/O 或 await）；需要从 Request 异步读 body 时，
-           启动读取后立即退出锁，originalFetch 在锁外尽快调用 ── */
+        /* ── 请求入口同步快照 ── */
         realmHookInFlight = true;
-        /* object|null: 从 init.body 同步捕获到的请求体（无需异步读取时使用） */
-        let syncBody = null;
-        /* string|null: 从 init.body 同步捕获到的原始请求文本（信封解包用） */
-        let rawText = null;
-        /* Promise<object|null>|null: 从 Request.clone() 异步读取 body 的 Promise */
-        let asyncBodyPromise = null;
+        let requestContext;
         try {
-            if (init && init.body) {
-                if (typeof init.body === 'string') {
-                    rawText = init.body;
-                    /* 外层被快速通道跳过时不解析：是否解析交给信封预筛命中后的异步判定 */
-                    if (!outerFastPath) {
-                        try { syncBody = JSON.parse(init.body); } catch (e) { syncBody = null; }
-                    }
-                } else if (typeof init.body === 'object' && !Array.isArray(init.body)) {
-                    /* 直接引用（不 clone，因为 processCapturedBody 只做读取） */
-                    syncBody = init.body;
-                }
-            }
-
-            /* Request 对象 body 不额外读取（信封探测只针对同步可读的 init.body 字符串） */
-            if (!outerFastPath && !syncBody && isRequestLike(input)) {
-                try {
-                    const clonedReq = input.clone();
-                    asyncBodyPromise = clonedReq.text().then(text => {
-                        if (text) {
-                            try { return JSON.parse(text); } catch (e) { return null; }
-                        }
-                        return null;
-                    }).catch(() => null);
-                } catch (e) {
-                    /* clone 失败（body 可能已被消费），忽略 */
-                }
-            }
+            requestContext = buildFetchRequestContext(realmWindow, input, init, method, requestStartedAt);
+            requestContext.rawText = bodyDescriptor.state === 'text'
+                && typeof bodyDescriptor.value === 'string'
+                ? bodyDescriptor.value
+                : null;
+            lastFetchSourceContextSummary = {
+                passId: requestContext.generationPass ? requestContext.generationPass.id : null,
+                hasPassEvidence: !!requestContext.passEvidence,
+                hasBodyRef: !!(requestContext.passEvidence && requestContext.passEvidence.bodyRef),
+                hasChatBodyRef: !!(requestContext.passEvidence && requestContext.passEvidence.chatBodyRef),
+                promptCount: requestContext.passEvidence && Array.isArray(requestContext.passEvidence.promptArray)
+                    ? requestContext.passEvidence.promptArray.length
+                    : 0,
+                hasDataTime: !!(requestContext.passEvidence && requestContext.passEvidence.dataTime != null),
+                e2ClaimedAtEntry: !!(requestContext.generationPass && requestContext.generationPass.e2Claimed),
+                hasNativeIntent: !!requestContext.nativeIntentSnapshot,
+                hasApiIdentity: !!(requestContext.apiIdentitySnapshot
+                    && requestContext.apiIdentitySnapshot.available),
+            };
         } finally {
             realmHookInFlight = false;
         }
-
-        /* ── 请求上下文（来源判定用，RQ-32）──
-           在拦截瞬间同步读取；E1（句柄对象同一）的两个信号取自同一时刻，
-           故不存在「判定晚于流式处理器销毁」的时序窗口。 */
-        const requestContext = buildFetchRequestContext(realmWindow, input, init, method);
 
         /* ── 调用原始 fetch（锁外；经闭包引用调用，避免经 window.fetch 递归）──
            模拟捕获这条例外：记录跑完就返回「已中止」，不把请求交出去 */
@@ -2037,41 +2604,41 @@ function createFetchHook(realmWindow, getOriginalFetch) {
             ? Promise.reject(new DOMException('Simulate mode: generation request blocked', 'AbortError'))
             : originalFetch.apply(realmWindow, [input, init]);
 
-        /* ── 后台异步处理 body（不阻塞 fetch 返回） ── */
-        if (syncBody || rawText || asyncBodyPromise) {
-            /* 本次请求捕获编号：回复挂载、待办区清理都依赖它；模拟捕获这条不发网络，没有回复可追 */
-            const captureId = simulateCapture ? null : ++captureSeq;
-            /* 在返回给调用方的同一个 fetchPromise 上挂回复追踪（精确对应，乱序/并发不串）；
-               模拟捕获这条没有回复可追 */
-            if (captureId != null) captureResponseForRequest(fetchPromise, replyGateUrl, captureId);
-            /* 统一判定（外层优先、外层不通过才尝试信封解包），命中即用生效地址与生效请求体建档；
-               getBody 惰性求值，被快速通道跳过时不重复解析外层 body */
-            const handleBody = (getBody) => {
-                const decision = decideCapturedRequest({
-                    requestUrl,
-                    method,
-                    rawText,
-                    context: requestContext,
-                    getBody,
-                });
-                if (!decision) {
-                    /* 模拟捕获这条没过请求体判定：不建档，也别让模拟流程一直等 */
-                    if (simulateCapture) simulateCapture.settle(null);
-                    return null;
-                }
-                return processCapturedBody(decision.effectiveBody, decision.effectiveUrl, captureId,
-                    decision.viaProxyEnvelope, decision.context, simulateCapture);
-            };
-            if (syncBody || rawText) {
-                /* 同步捕获的 body / 原始文本：解析与判定放到请求发出之后的异步阶段 */
-                Promise.resolve().then(() => handleBody(() => syncBody || parseJsonText(rawText)))
-                    .catch(() => { /* 静默处理 */ });
-            } else if (asyncBodyPromise) {
-                asyncBodyPromise.then(body => {
-                    if (body) return handleBody(() => body);
-                }).catch(() => { /* 静默处理 */ });
-            }
+        const hasCapturableBody = bodyDescriptor.state === 'text' || bodyDescriptor.state === 'structured-object';
+        if (!hasCapturableBody) {
+            if (simulateCapture) simulateCapture.settle(null);
+            return fetchPromise;
         }
+
+        /* 分配捕获编号并注册初始回复追踪。 */
+        const captureId = simulateCapture ? null : ++captureSeq;
+        let replyTracked = false;
+        if (captureId != null) {
+            replyTracked = captureResponseForRequest(fetchPromise, replyGateUrl, captureId);
+        }
+
+        Promise.resolve().then(async () => {
+            const plan = await planCapturedRequest({
+                requestUrl,
+                method,
+                body: bodyDescriptor,
+                context: requestContext,
+                captureId,
+                requestStartedAt,
+            });
+            if (!plan) {
+                if (captureId != null && replyTracked) abortPendingReply(captureId);
+                if (simulateCapture) simulateCapture.settle(null);
+                return;
+            }
+            if (captureId != null && !replyTracked) {
+                replyTracked = captureResponseForRequest(fetchPromise, plan.effectiveUrl, captureId);
+            }
+            await processCapturePlan(plan, captureId, simulateCapture, requestStartedAt);
+        }).catch(() => {
+            if (captureId != null) abortPendingReply(captureId);
+            if (simulateCapture) simulateCapture.settle(null);
+        });
 
         return fetchPromise;
     };
@@ -2187,32 +2754,28 @@ function resolveRealmUrl(realmWindow, url) {
     }
 }
 
-/* 开始一次 XHR 旁听（只旁听、绝不打扰）：send 阶段同步建「被动缓冲」合成流并挂事件监听，
-   此时不分配 captureId、不注册回复追踪；判定通过后由调用方接管。
-   来源判定上下文里 signal / streamingSignal 恒为 null：XHR 没有请求身上的可中止句柄，
-   E1（句柄对象同一）只适用于 fetch，绝不可套到 XHR 上。
+/* 开始一次 XHR 旁听并建立响应缓冲。
    @param {XMLHttpRequest} xhr @param {*} body @param {Window} realmWindow 发出该请求的 realm
-   @returns {{method, url, rawText, trackReply, responsePromise, discard, context}|null} */
+   @returns {{method, url, body, trackReply, responsePromise, discard, context}|null} */
 function beginXhrCapture(xhr, body, realmWindow) {
     if (!masterEnabled) return null;
     if (!xhr || typeof xhr !== 'object') return null;
+    /* XHR 请求发起时间。 */
+    const requestStartedAt = Date.now();
     const meta = xhrOpenMeta.get(xhr);
     if (!meta || !meta.async) return null;              /* 未经过 open 或同步 XHR（第三参 false）不追踪 */
-    if (typeof body !== 'string' || !body) return null; /* 只旁听字符串 body */
+    const bodyDescriptor = readXhrBodySource(body);
+    if (bodyDescriptor.state === 'none') return null;    /* 只旁听非空字符串 body */
+    lastBodyDescriptorSummary = summarizeBodyDescriptor(bodyDescriptor);
     const requestUrl = meta.url;
-    const rawText = body;
-    /* 请求上下文（来源判定用，RQ-32）：是否顶层窗口 / 方法 / 原始请求文本 */
-    const context = {
+    const rawText = bodyDescriptor.value;
+    /* XHR 请求入口上下文。 */
+    const context = Object.assign(buildSourceContext(realmWindow, meta.method, true, requestStartedAt), {
         rawText,
-        bodyObject: null, /* 外层判定通过时由 decideCapturedRequest 补上 */
-        method: meta.method,
-        topWindow: realmWindow === window,
-        fromXhr: true,
         signal: null,
         streamingSignal: null,
-    };
-    /* 外层快速通道：地址是 ST 内部接口且不含生成端点特征时，只有文本命中「URL 形状」预筛才继续
-       （非信封的 /api/ 写请求在这一步就退出，成本与既有拦截的快速通道一致） */
+    });
+    /* ST 内部 URL 只在文本可能构成信封时继续。 */
     if (isOuterFastPathUrl(requestUrl) && !ENVELOPE_URL_SHAPE_RE.test(rawText)) return null;
 
     /* responseType 不是空/`text` 时只记请求、不追回复（因此不需要建流与监听） */
@@ -2223,11 +2786,12 @@ function beginXhrCapture(xhr, body, realmWindow) {
         return {
             method: meta.method,
             url: requestUrl,
-            rawText,
+            body: bodyDescriptor,
             trackReply: false,
             responsePromise: null,
             discard: () => { /* 只记请求，无需清理缓冲 */ },
             context,
+            requestStartedAt,
         };
     }
 
@@ -2309,10 +2873,11 @@ function beginXhrCapture(xhr, body, realmWindow) {
     return {
         method: meta.method,
         url: requestUrl,
-        rawText,
+        body: bodyDescriptor,
         trackReply: true,
         responsePromise,
         context,
+        requestStartedAt,
         /* 判定不通过：丢弃被动缓冲（不分配 captureId、不占用回复待办名额） */
         discard: () => {
             stopped = true;
@@ -2321,27 +2886,34 @@ function beginXhrCapture(xhr, body, realmWindow) {
     };
 }
 
-/* 异步处理一次旁听到的 XHR：判定 → 分配捕获编号并注册回复追踪 → 走既有记录管道。
+/* 规划并处理一次已旁听的 XHR。
    @param {object} capture beginXhrCapture 的返回句柄 */
-function processCapturedXhr(capture) {
-    const decision = decideCapturedRequest({
-        requestUrl: capture.url,
-        method: capture.method,
-        rawText: capture.rawText,
-        context: capture.context,
-        getBody: () => parseJsonText(capture.rawText),
-    });
-    if (!decision) {
+async function processCapturedXhr(capture) {
+    let captureId = null;
+    try {
+        const plan = await planCapturedRequest({
+            requestUrl: capture.url,
+            method: capture.method,
+            body: capture.body,
+            context: capture.context,
+            requestStartedAt: capture.requestStartedAt,
+        });
+        if (!plan) {
+            capture.discard();
+            return null;
+        }
+        /* 计划成立后分配捕获编号并注册回复追踪。 */
+        captureId = capture.trackReply ? ++captureSeq : null;
+        plan.captureId = captureId;
+        if (captureId != null) {
+            captureResponseForRequest(capture.responsePromise, plan.effectiveUrl, captureId);
+        }
+        return await processCapturePlan(plan, captureId, null, capture.requestStartedAt);
+    } catch (e) {
+        if (captureId != null) abortPendingReply(captureId);
         capture.discard();
         return null;
     }
-    /* 判定通过才分配 captureId 并注册回复追踪：非记录类 XHR 完全不占用待办名额 */
-    const captureId = capture.trackReply ? ++captureSeq : null;
-    if (captureId != null) {
-        captureResponseForRequest(capture.responsePromise, decision.effectiveUrl, captureId);
-    }
-    return processCapturedBody(decision.effectiveBody, decision.effectiveUrl, captureId,
-        decision.viaProxyEnvelope, decision.context);
 }
 
 /* 给单个 realm 安装 XHR 包装（主窗口与同源 iframe 共用）：只旁听、绝不打扰原调用。
@@ -2411,10 +2983,10 @@ function hookRealmXhr(realmWindow) {
 
 /* ── 回复追踪与解析 ──────────────────────── */
 
-/* 当前生效的回复超时时长（有调试覆盖时用覆盖值，否则用默认 5 分钟）
-   @returns {number} */
+/* 当前生效的回复超时时长（有调试覆盖时用覆盖值；否则读取设置，0 表示不设超时）
+   @returns {number} 毫秒；0 表示禁用超时 */
 function getReplyTimeoutMs() {
-    return replyTimeoutOverrideMs != null ? replyTimeoutOverrideMs : REPLY_TIMEOUT_MS;
+    return replyTimeoutOverrideMs != null ? replyTimeoutOverrideMs : replyTimeoutSec * 1000;
 }
 
 /* 状态标记显示文本（英文，首字母大写）
@@ -2483,6 +3055,102 @@ function getReplyStatusTitle(record) {
     return `${reason} · ${reply.time || ''}`;
 }
 
+/* 性能时长统一用秒显示：首字较短保留两位小数，常规耗时保留一位，长时间不再显示无用小数 */
+function formatResponseDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return RESPONSE_META_DASH;
+    const seconds = ms / 1000;
+    if (seconds < 1) return `${seconds.toFixed(2)}s`;
+    if (seconds < 100) return `${seconds.toFixed(1)}s`;
+    return `${Math.round(seconds)}s`;
+}
+
+/* 悬浮说明只显示完成时刻，不带日期；取不到合法时间时显示短横线 */
+function formatResponseClock(time) {
+    const match = String(time || '').match(/(\d{2}:\d{2}:\d{2})$/);
+    return match ? match[1] : RESPONSE_META_DASH;
+}
+
+/* 按固定路径取原始字段；只读取白名单规则命中的位置，不遍历或保存整个响应。 */
+function getResponseMetaPathValue(root, path) {
+    let current = root;
+    for (const part of path) {
+        if (current == null || typeof current !== 'object') return undefined;
+        current = current[part];
+    }
+    return current;
+}
+
+/* null、缺失和空字符串不算有效值；数字 0、false、对象和数组仍按原值保留。 */
+function isValidResponseMetaValue(value) {
+    if (value == null) return false;
+    if (typeof value === 'string') return value.length > 0;
+    return true;
+}
+
+/* 从任意已解析响应 JSON 采集白名单字段。同一路径后到的非空值覆盖前值，
+   不同路径始终分开保存；流式中间块和最终块各自调用，不会因最终块缺少字段而丢值。 */
+function collectResponseMetaFromJson(chunk, captureId) {
+    const entry = pendingReplies.get(captureId);
+    if (!entry || entry.finished || !chunk || typeof chunk !== 'object') return;
+    if (!Array.isArray(entry.upstreamMeta)) entry.upstreamMeta = [];
+    if (!(entry.upstreamMetaByPath instanceof Map)) entry.upstreamMetaByPath = new Map();
+
+    for (const rule of RESPONSE_META_FIELD_RULES) {
+        const value = getResponseMetaPathValue(chunk, rule.path);
+        if (!isValidResponseMetaValue(value)) continue;
+        const path = rule.path.map((part) => typeof part === 'number' ? `[${part}]` : part)
+            .join('.')
+            .replace(/\.\[/g, '[');
+        const existing = entry.upstreamMetaByPath.get(path);
+        if (existing) {
+            existing.value = value;
+            existing.valueType = Array.isArray(value) ? 'array' : typeof value;
+            continue;
+        }
+        const field = {
+            key: rule.key,
+            path,
+            value,
+            valueType: Array.isArray(value) ? 'array' : typeof value,
+            order: rule.order,
+        };
+        entry.upstreamMetaByPath.set(path, field);
+        entry.upstreamMeta.push(field);
+    }
+}
+
+/* Response 标题行性能指标：非流式不计算首字与 TPS，失败/中止也不计算 TPS */
+function getReplyPerformanceValues(msg) {
+    if (!msg || msg.simulated) {
+        return { firstToken: RESPONSE_META_DASH, tps: RESPONSE_META_DASH, elapsed: RESPONSE_META_DASH };
+    }
+    const hasTtft = msg.streaming === true
+        && Number.isFinite(msg.ttftMs)
+        && msg.ttftMs >= 0;
+    const hasElapsed = Number.isFinite(msg.elapsedMs) && msg.elapsedMs >= 0;
+    const decodeMs = hasTtft && hasElapsed ? msg.elapsedMs - msg.ttftMs : 0;
+    const canComputeTps = hasTtft
+        && hasElapsed
+        && msg.status === 'succeed'
+        && Number.isFinite(msg.tokens)
+        && msg.tokens > 0
+        && decodeMs > 0;
+    return {
+        firstToken: hasTtft ? formatResponseDuration(msg.ttftMs) : RESPONSE_META_DASH,
+        tps: canComputeTps ? (msg.tokens * 1000 / decodeMs).toFixed(1) : RESPONSE_META_DASH,
+        elapsed: hasElapsed ? formatResponseDuration(msg.elapsedMs) : RESPONSE_META_DASH,
+    };
+}
+
+/* Response 标题行的指标文字；内容预览开关不再影响 Response 的这一位置 */
+function buildResponseMetaHtml(msg, recordIdx, msgIdx) {
+    const perf = getReplyPerformanceValues(msg);
+    return `<span class="rmsg-response-meta">`
+        + `<button type="button" class="rmsg-response-info" data-record="${recordIdx}" data-msg="${msgIdx}" title="查看响应详情" aria-label="查看响应详情" aria-expanded="false" aria-controls="rlog-response-meta-tip">ⓘ</button>`
+        + `<span class="rmsg-response-metrics">首字 ${perf.firstToken} · TPS ${perf.tps} · 耗时 ${perf.elapsed}</span>`
+        + `</span>`;
+}
+
 /* 拼接回复展示内容：思考用 <think> 包裹、空一行后接正文
    @param {object} replyData { reasoning, content } @returns {string} */
 function buildReplyContent(replyData) {
@@ -2501,16 +3169,19 @@ function appendReplyText(entry, text, isReasoning) {
     if (!text) return;
     const key = isReasoning ? 'reasoning' : 'content';
     const acc = entry[key] || '';
+    let changed = false;
     if (!acc) {
         entry[key] = text; /* 首段直接写入 */
-        return;
-    }
-    if (text.startsWith(acc) && text.length > acc.length) {
+        changed = true;
+    } else if (text.startsWith(acc) && text.length > acc.length) {
         entry[key] = text; /* 累计式（Gemini 等）：整体替换 */
+        changed = true;
     } else if (!text.startsWith(acc)) {
         entry[key] = acc + text; /* 增量式：追加 */
+        changed = true;
     }
     /* text === acc（等长重复）视为无新增，跳过 */
+    if (changed && entry.firstTokenAt == null) entry.firstTokenAt = Date.now();
 }
 
 /* 从单个 JSON chunk 提取正文/思考增量（兼容 OpenAI delta/message/text + reasoning_content、
@@ -2588,6 +3259,7 @@ function processSseText(text, captureId) {
         if (!data || data === '[DONE]') continue;
         let chunk = null;
         try { chunk = JSON.parse(data); } catch (e) { continue; }
+        collectResponseMetaFromJson(chunk, captureId);
         if (chunk && chunk.error) {
             finalizeReply(captureId, 'fail', 'api error: ' + (chunk.error.message || chunk.error.code || 'unknown'));
             return;
@@ -2607,10 +3279,14 @@ function readResponseBody(clone, captureId, hintMode = null) {
     }
     const reader = clone.body.getReader();
     const entry = pendingReplies.get(captureId);
-    if (entry) entry.reader = reader;
+    if (entry) {
+        entry.reader = reader;
+        if (hintMode === 'sse') entry.streaming = true;
+    }
     const decoder = new TextDecoder();
     let buffer = '';
     let mode = hintMode; /* null=未确定, 'sse', 'json' */
+    let sawBytes = false;
 
     function finalizeDone() {
         const cur = pendingReplies.get(captureId);
@@ -2624,6 +3300,7 @@ function readResponseBody(clone, captureId, hintMode = null) {
                 let data = null;
                 try { data = JSON.parse(text); } catch (e) { data = null; }
                 if (data) {
+                    collectResponseMetaFromJson(data, captureId);
                     if (data.error) {
                         finalizeReply(captureId, 'fail', 'api error: ' + (data.error.message || data.error.code || 'unknown'));
                         return;
@@ -2634,6 +3311,7 @@ function readResponseBody(clone, captureId, hintMode = null) {
                     appendReplyText(cur, text, false);
                 }
             }
+            if (sawBytes) cur.streaming = false;
         }
         finalizeReply(captureId, 'succeed', '');
     }
@@ -2646,10 +3324,13 @@ function readResponseBody(clone, captureId, hintMode = null) {
                 finalizeDone();
                 return;
             }
+            sawBytes = true;
             buffer += decoder.decode(value, { stream: true });
             /* 未确定模式时按内容识别：出现 data: 行即视为 SSE */
             if (!mode && /^data:|\ndata:/.test(buffer)) {
                 mode = 'sse';
+                const current = pendingReplies.get(captureId);
+                if (current) current.streaming = true;
             }
             if (mode === 'sse') {
                 const parts = buffer.split(/\r\n\r\n|\r\r|\n\n/);
@@ -2668,6 +3349,7 @@ function readResponseBody(clone, captureId, hintMode = null) {
             if (mode === 'sse' && buffer.trim()) {
                 processSseText(buffer, captureId);
             }
+            if (sawBytes) cur.streaming = mode === 'sse';
             finalizeReply(captureId, 'fail', 'stream aborted');
         });
     }
@@ -2717,6 +3399,7 @@ function readErrorResponseBody(response, captureId, baseReason) {
         if (trimmed) {
             let data = null;
             try { data = JSON.parse(trimmed); } catch (e) { data = null; }
+            if (data) collectResponseMetaFromJson(data, captureId);
             const message = data ? extractErrorMessage(data) : '';
             if (message) reason = `${baseReason}: ${message}`;
         }
@@ -2744,19 +3427,27 @@ function readErrorResponseBody(response, captureId, baseReason) {
     pump();
 }
 
-/* 为已捕获的请求挂回复追踪：在 fetchPromise 上追加处理、不改动该 Promise，读 clone 不影响原响应
-   @param {Promise<Response>} fetchPromise @param {string} requestUrl @param {number} captureId */
+/* 为请求挂回复追踪；返回是否实际建立追踪。 */
 function captureResponseForRequest(fetchPromise, requestUrl, captureId) {
-    if (!isPotentialGenerationUrl(requestUrl)) return;
+    if (!isPotentialGenerationUrl(requestUrl)) return false;
+    if (pendingReplies.has(captureId)) return true;
 
-    /* 待办区满：淘汰最旧的追踪（释放其 reader），避免内存膨胀 */
-    if (pendingReplies.size >= MAX_PENDING_REPLIES) {
+    /* 待办区达到动态上限：淘汰最旧的追踪（释放其 reader），避免内存膨胀 */
+    const pendingLimit = getPendingReplyLimit();
+    while (pendingReplies.size >= pendingLimit) {
         const oldestKey = pendingReplies.keys().next().value;
-        if (oldestKey != null) abortPendingReply(oldestKey);
+        if (oldestKey == null) break;
+        abortPendingReply(oldestKey);
     }
 
     const entry = {
         startTime: Date.now(),
+        firstTokenAt: null,
+        streaming: null,
+        elapsedMs: null,
+        httpStatus: null,
+        upstreamMeta: [],
+        upstreamMetaByPath: new Map(),
         timer: null,
         expireTimer: null,
         status: null,
@@ -2769,15 +3460,22 @@ function captureResponseForRequest(fetchPromise, requestUrl, captureId) {
     };
     pendingReplies.set(captureId, entry);
 
-    /* 超时兜底：5 分钟未结束 → 停止追踪并标记 Timeout（保留已累积内容） */
-    entry.timer = setTimeout(() => {
-        finalizeReply(captureId, 'timeout', 'timeout');
-    }, getReplyTimeoutMs());
+    /* 超时兜底：到点未结束 → 停止追踪并标记 Timeout（保留已累积内容）；0 不创建定时器 */
+    const replyTimeoutMs = getReplyTimeoutMs();
+    if (replyTimeoutMs > 0) {
+        entry.timer = setTimeout(() => {
+            finalizeReply(captureId, 'timeout', 'timeout');
+        }, replyTimeoutMs);
+    }
 
     fetchPromise.then(response => {
         try {
             if (!response || !response.ok) {
                 if (response) {
+                    const entry = pendingReplies.get(captureId);
+                    if (entry && Number.isInteger(response.status) && response.status > 0) {
+                        entry.httpStatus = response.status;
+                    }
                     /* 非 2xx：尽力读取错误正文提取真实报错，读不到则回退状态码 */
                     readErrorResponseBody(response, captureId, `HTTP ${response.status}`);
                 } else {
@@ -2799,6 +3497,7 @@ function captureResponseForRequest(fetchPromise, requestUrl, captureId) {
         const reason = (err && err.name === 'AbortError') ? 'aborted' : 'network error';
         finalizeReply(captureId, 'fail', reason);
     });
+    return true;
 }
 
 /* 回复追踪终态：标记完成、释放读取器、挂到已有记录；记录未建成则留在待办区（60s 上限）
@@ -2827,7 +3526,10 @@ function finalizeReply(captureId, status, failReason) {
     entry.status = status;
     entry.failReason = failReason || '';
     const now = new Date();
-    entry.time = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const completedAt = now.getTime();
+    entry.elapsedMs = Math.max(0, completedAt - entry.startTime);
+    entry.ttftMs = entry.firstTokenAt == null ? null : Math.max(0, entry.firstTokenAt - entry.startTime);
+    entry.time = formatTimestamp(now);
 
     const record = findRecordByCaptureId(captureId);
     if (record) {
@@ -2879,6 +3581,8 @@ function findRecordByCaptureId(captureId) {
    @param {object} record @param {object} replyData @param {boolean} [skipRender=false] */
 function attachReplyToRecord(record, replyData, skipRender = false) {
     if (!record || record.reply) return;
+    const outputParts = getReplyOutputParts(replyData);
+    const hasOutput = outputParts.length > 0;
     /* Fail/Timeout 时把失败原因写进回复内容：已有内容（如中止保留的半截回复）末尾空一行追加； */
     /* 内容为空则直接写原因。移动端没有悬停，这样展开/预览/复制/搜索都能直接看到报错。 */
     let content = buildReplyContent(replyData);
@@ -2894,11 +3598,26 @@ function attachReplyToRecord(record, replyData, skipRender = false) {
         status: replyData.status,
         failReason: replyData.failReason || '',
         time: replyData.time || '',
+        streaming: replyData.streaming === true ? true : (replyData.streaming === false ? false : null),
+        ttftMs: Number.isFinite(replyData.ttftMs) ? replyData.ttftMs : null,
+        elapsedMs: Number.isFinite(replyData.elapsedMs) ? replyData.elapsedMs : null,
+        httpStatus: Number.isInteger(replyData.httpStatus) ? replyData.httpStatus : null,
+        upstreamMeta: Array.isArray(replyData.upstreamMeta)
+            ? replyData.upstreamMeta.map((field) => ({ ...field }))
+            : [],
+        simulated: !!record.simulated,
+        hasOutput,
     };
-    /* 异步精确计算回复 token（结果写回后只更新回复标题栏的数字，不重建列表） */
-    computeTokensForMessages([record.reply], record.modelName || '').then(() => {
-        updateReplyTokenInDom(record);
-    }).catch(() => { /* 静默 */ });
+    /* Response 也属于搜索正文：已有全局结果时由用户主动更新，不自动追加当前结果。 */
+    markGlobalSearchDataChanged();
+    /* 异步只统计实际生成内容；失败原因仍保留在正文中展示，但不计入 token */
+    if (hasOutput) {
+        computeTokensForReplyOutput(outputParts, record.modelName || '').then((result) => {
+            record.reply.tokens = result.tokens;
+            record.reply.tokenPrecise = result.tokenPrecise;
+            updateReplyMetaInDom(record);
+        }).catch(() => { /* 静默 */ });
+    }
     if (!skipRender) appendReplyToRecordDom(record);
     /* 响应正文已定稿：登记为「待修正」（等 ST 消息事件落楼后做一次「插件 → 原生」的有限提升） */
     queueSourceCorrection(record);
@@ -2946,10 +3665,10 @@ function appendReplyToRecordDom(record) {
     }
 }
 
-/* 回复 token 计算完成后只更新回复标题栏的 token 数字，不重建列表。
+/* 回复 token 计算完成后更新 token 数字与 Response 的 TPS，不重建列表。
    记录不在 DOM 时（面板关闭/引导中）由下次渲染自然带上正确数字。
    @param {object} record 目标记录 */
-function updateReplyTokenInDom(record) {
+function updateReplyMetaInDom(record) {
     panelContentDirty = true;
     if (!panelEl || !isPanelVisible) return;
     const idx = records.indexOf(record);
@@ -2958,9 +3677,18 @@ function updateReplyTokenInDom(record) {
     if (!listEl) return;
     const replyItemEl = listEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${record.messages.length}"]`);
     const tokensEl = replyItemEl ? replyItemEl.querySelector('.rmsg-tokens') : null;
-    if (tokensEl) {
-        const reply = record.reply;
-        tokensEl.textContent = `${reply.tokenPrecise ? '' : '~'}${reply.tokens} tokens`;
+    const reply = record.reply;
+    if (tokensEl && reply) {
+        tokensEl.textContent = getMessageTokenText(reply);
+    }
+    const metricsEl = replyItemEl ? replyItemEl.querySelector('.rmsg-response-metrics') : null;
+    if (metricsEl && reply) {
+        const perf = getReplyPerformanceValues(reply);
+        metricsEl.textContent = `首字 ${perf.firstToken} · TPS ${perf.tps} · 耗时 ${perf.elapsed}`;
+    }
+    const readBtn = replyItemEl ? replyItemEl.querySelector('.rmsg-read-btn') : null;
+    if (readBtn && reply) {
+        readBtn.hidden = !shouldOfferMessageRead(reply);
     }
 }
 
@@ -2980,6 +3708,12 @@ function computeMessagesFingerprint(messages) {
 /* 当前普通记录（未置顶）列表 */
 function getNormalRecords() {
     return records.filter(r => !r.pinned);
+}
+
+/* 待回复有效上限跟随「普通记录上限 + 当前置顶数」，并保留 100 条的全局内存保护 */
+function getPendingReplyLimit() {
+    const pinnedCount = records.reduce((count, record) => count + (record.pinned ? 1 : 0), 0);
+    return Math.min(MAX_RECORDS + pinnedCount, MAX_PENDING_REPLIES_HARD_LIMIT);
 }
 
 /* 裁剪超出普通记录上限的最旧普通记录（从数组末尾向前找并删除，保持 records 原顺序）。
@@ -3017,12 +3751,14 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
     const record = {
         characterName,
         timestamp: ts,
+        requestStartedAt: Number.isFinite(options.requestStartedAt) ? options.requestStartedAt : now,
         /* 来源判定在拦截时完成、建档要等 token 计算，两步之间本轮状态可能已变，
            故建档前对「位置证据」做一次最终确认（见 finalizePositionEvidenceSource） */
-        source: finalizePositionEvidenceSource(source)
+        source: finalizePositionEvidenceSource(source, options.sourcePass || null)
             || { type: 'plugin', label: '插件', detail: SOURCE_PLUGIN_DEFAULT_DETAIL },
         modelName: modelName || '未知模型',
         messages,
+        promptTokens: getTotalTokens(messages), /* 与 ST 提示词预算一致的逐条消息份额合计 */
         rawBody: rawBody || null,   /* 原始请求体 JSON 对象（「查看全文」原始格式用） */
         collapsed: true,
         pinned: false,                /* 临时置顶标记：不占用普通记录上限，刷新即重置 */
@@ -3065,6 +3801,8 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
 
     records.unshift(record);
     pruneNormalRecords();
+    /* 新记录到达后只提示全局搜索可更新；旧结果和当前关键词保持不变。 */
+    markGlobalSearchDataChanged();
 
     panelContentDirty = true;
     if (panelEl && isPanelVisible) {
@@ -3113,11 +3851,266 @@ function clearAllRecords() {
 
 /* ── 持久化设置 ────────────────────────── */
 
+function createDefaultPluginSettings() {
+    return {
+        schemaVersion: SETTINGS_SCHEMA_VERSION,
+        masterEnabled: true,
+        maxRecords: DEFAULT_MAX_RECORDS,
+        replyTimeoutSec: DEFAULT_REPLY_TIMEOUT_SEC,
+        replyTimeoutConfigured: false,
+        tokenWarningThreshold: DEFAULT_TOKEN_WARNING_THRESHOLD,
+        contentPreview: false,
+        theme: 'light',
+        badgeDefault: false,
+        quickReplyEntry: false,
+        hideExtensionEntry: false,
+        followStTheme: false,
+        mobileFull: false,
+        clickOutside: false,
+        filterPersist: false,
+        minimal: false,
+        filterState: createDefaultFilterState(),
+        tourVersion: '',
+    };
+}
+
+/* 校验并补齐 ST 中的本插件配置；未知顶层字段由保存函数另行保留 */
+function normalizePluginSettings(raw) {
+    const defaults = createDefaultPluginSettings();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return defaults;
+    }
+
+    const bool = (value, fallback) => typeof value === 'boolean' ? value : fallback;
+    const requestedMax = Number(raw.maxRecords);
+    const maxRecords = Number.isInteger(requestedMax)
+        && requestedMax >= MIN_MAX_RECORDS
+        && requestedMax <= MAX_MAX_RECORDS
+        ? requestedMax
+        : defaults.maxRecords;
+    const rawReplyTimeout = raw.replyTimeoutSec;
+    const requestedReplyTimeout = Number(rawReplyTimeout);
+    let replyTimeoutSecValue = (typeof rawReplyTimeout === 'number' || typeof rawReplyTimeout === 'string')
+        && String(rawReplyTimeout).trim() !== ''
+        && Number.isInteger(requestedReplyTimeout)
+        && requestedReplyTimeout >= MIN_REPLY_TIMEOUT_SEC
+        && requestedReplyTimeout <= MAX_REPLY_TIMEOUT_SEC
+        ? requestedReplyTimeout
+        : defaults.replyTimeoutSec;
+    const rawReplyTimeoutConfigured = raw.replyTimeoutConfigured === true;
+    /* 0 是合法值，但旧版本/中止测试可能留下没有明确保存标记的 0；这类值按默认 300 修复 */
+    if (replyTimeoutSecValue === MIN_REPLY_TIMEOUT_SEC && !rawReplyTimeoutConfigured) {
+        replyTimeoutSecValue = defaults.replyTimeoutSec;
+    }
+    const rawWarningThreshold = raw.tokenWarningThreshold;
+    const requestedWarningThreshold = Number(rawWarningThreshold);
+    const tokenWarningThresholdValue = (typeof rawWarningThreshold === 'number'
+        || typeof rawWarningThreshold === 'string')
+        && String(rawWarningThreshold).trim() !== ''
+        && Number.isInteger(requestedWarningThreshold)
+        && requestedWarningThreshold >= MIN_TOKEN_WARNING_THRESHOLD
+        && requestedWarningThreshold <= MAX_TOKEN_WARNING_THRESHOLD
+        ? requestedWarningThreshold
+        : defaults.tokenWarningThreshold;
+
+    return {
+        schemaVersion: SETTINGS_SCHEMA_VERSION,
+        masterEnabled: bool(raw.masterEnabled, defaults.masterEnabled),
+        maxRecords,
+        replyTimeoutSec: replyTimeoutSecValue,
+        replyTimeoutConfigured: rawReplyTimeoutConfigured
+            || replyTimeoutSecValue !== DEFAULT_REPLY_TIMEOUT_SEC,
+        tokenWarningThreshold: tokenWarningThresholdValue,
+        contentPreview: bool(raw.contentPreview, defaults.contentPreview),
+        theme: raw.theme === 'dark' ? 'dark' : raw.theme === 'light' ? 'light' : defaults.theme,
+        badgeDefault: bool(raw.badgeDefault, defaults.badgeDefault),
+        quickReplyEntry: bool(raw.quickReplyEntry, defaults.quickReplyEntry),
+        hideExtensionEntry: bool(raw.hideExtensionEntry, defaults.hideExtensionEntry),
+        followStTheme: bool(raw.followStTheme, defaults.followStTheme),
+        mobileFull: bool(raw.mobileFull, defaults.mobileFull),
+        clickOutside: bool(raw.clickOutside, defaults.clickOutside),
+        filterPersist: bool(raw.filterPersist, defaults.filterPersist),
+        minimal: bool(raw.minimal, defaults.minimal),
+        filterState: sanitizeFilterState(raw.filterState),
+        tourVersion: typeof raw.tourVersion === 'string' ? raw.tourVersion : '',
+    };
+}
+
+/* 读取旧版浏览器配置；无服务器配置时整体迁移，有半截服务器配置时补缺失字段 */
+function readLegacyPluginSettings() {
+    const defaults = createDefaultPluginSettings();
+    let found = false;
+    const read = (key) => {
+        try {
+            const value = localStorage.getItem(key);
+            if (value !== null) found = true;
+            return value;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    const legacyTheme = read(STORAGE_THEME_KEY);
+    const legacy = {
+        masterEnabled: read(STORAGE_MASTER_KEY) !== '0',
+        maxRecords: parseInt(read(STORAGE_MAX_RECORDS_KEY), 10),
+        contentPreview: read(STORAGE_PREVIEW_KEY) === '1',
+        theme: legacyTheme === 'dark' ? 'dark' : legacyTheme === 'light' ? 'light' : defaults.theme,
+        badgeDefault: read(STORAGE_PREF_BADGE_DEFAULT) === '1',
+        followStTheme: read(STORAGE_PREF_FOLLOW_ST_THEME) === '1',
+        mobileFull: read(STORAGE_PREF_MOBILE_FULL) === '1',
+        clickOutside: read(STORAGE_PREF_CLICK_OUTSIDE) === '1',
+        filterPersist: read(STORAGE_PREF_FILTER_PERSIST) === '1',
+        minimal: read(STORAGE_PREF_MINIMAL) === '1',
+        filterState: defaults.filterState,
+        tourVersion: read(STORAGE_TOUR_VERSION_KEY) || '',
+    };
+
+    const rawFilterState = read(STORAGE_FILTER_STATE_KEY);
+    if (rawFilterState !== null) {
+        try { legacy.filterState = JSON.parse(rawFilterState); }
+        catch (e) { legacy.filterState = defaults.filterState; }
+    }
+
+    return { found, settings: normalizePluginSettings(legacy) };
+}
+
+/* 服务器字段优先；若服务器配置不完整，只用旧浏览器值补缺失字段，避免半截配置造成设置丢失 */
+function mergePluginSettings(raw, fallback) {
+    const merged = { ...(fallback || {}) };
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        for (const key of Object.keys(raw)) {
+            if (raw[key] !== undefined) merged[key] = raw[key];
+        }
+    }
+    return normalizePluginSettings(merged);
+}
+
+/* 把服务器配置同步到现有运行时变量；界面代码继续使用原变量，不改变交互 */
+function applyPluginSettings(settings) {
+    pluginSettings = normalizePluginSettings(settings);
+    masterEnabled = pluginSettings.masterEnabled;
+    MAX_RECORDS = pluginSettings.maxRecords;
+    replyTimeoutSec = pluginSettings.replyTimeoutSec;
+    tokenWarningThreshold = pluginSettings.tokenWarningThreshold;
+    contentPreviewEnabled = pluginSettings.contentPreview;
+    isLightTheme = pluginSettings.theme === 'light';
+    for (const key of Object.keys(preferences)) {
+        preferences[key] = !!pluginSettings[key];
+    }
+    /* 仅开启「筛选状态持久化」时才恢复筛选；关闭时刷新仍应回到默认全开 */
+    filterState = pluginSettings.filterPersist
+        ? sanitizeFilterState(pluginSettings.filterState)
+        : createDefaultFilterState();
+}
+
+/* 只删除旧版本插件自己的浏览器键，绝不使用 localStorage.clear() */
+function removeLegacyPluginStorage() {
+    for (const key of LEGACY_STORAGE_KEYS) {
+        try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+    }
+}
+
+/* 从运行时变量生成完整快照；filterState 也随配置一并迁移到服务器 */
+function buildPluginSettingsSnapshot() {
+    return normalizePluginSettings({
+        ...(pluginSettings || {}),
+        schemaVersion: SETTINGS_SCHEMA_VERSION,
+        masterEnabled,
+        maxRecords: MAX_RECORDS,
+        replyTimeoutSec,
+        replyTimeoutConfigured: !!(pluginSettings && pluginSettings.replyTimeoutConfigured)
+            || replyTimeoutSec !== DEFAULT_REPLY_TIMEOUT_SEC,
+        tokenWarningThreshold,
+        contentPreview: contentPreviewEnabled,
+        theme: isLightTheme ? 'light' : 'dark',
+        badgeDefault: preferences.badgeDefault,
+        quickReplyEntry: preferences.quickReplyEntry,
+        hideExtensionEntry: preferences.hideExtensionEntry,
+        followStTheme: preferences.followStTheme,
+        mobileFull: preferences.mobileFull,
+        clickOutside: preferences.clickOutside,
+        filterPersist: preferences.filterPersist,
+        minimal: preferences.minimal,
+        filterState,
+        tourVersion: pluginSettings && typeof pluginSettings.tourVersion === 'string'
+            ? pluginSettings.tourVersion
+            : '',
+    });
+}
+
+/* 写入本插件自己的 extensionSettings 键；保留本对象内的未知字段，不碰其他插件键 */
+function persistPluginSettings() {
+    const context = getStContextSafe();
+    if (!context || !context.extensionSettings) return false;
+
+    const snapshot = buildPluginSettingsSnapshot();
+    const stored = context.extensionSettings[PLUGIN_KEY];
+    const preserved = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+    context.extensionSettings[PLUGIN_KEY] = { ...preserved, ...snapshot };
+    pluginSettings = snapshot;
+
+    if (typeof context.saveSettingsDebounced === 'function') {
+        context.saveSettingsDebounced();
+    }
+    return true;
+}
+
+/* 加载服务器配置；服务器已有本插件键时以服务器为准，否则安全迁移旧浏览器配置 */
+function loadPluginSettings() {
+    const context = getStContextSafe();
+    const extensionSettings = context && context.extensionSettings;
+    if (!extensionSettings) return false;
+
+    const stored = extensionSettings[PLUGIN_KEY];
+    const hasStoredSettings = stored && typeof stored === 'object' && !Array.isArray(stored);
+    const legacy = readLegacyPluginSettings();
+
+    if (hasStoredSettings) {
+        applyPluginSettings(legacy.found
+            ? mergePluginSettings(stored, legacy.settings)
+            : normalizePluginSettings(stored));
+        /* 服务器已有字段优先，旧浏览器值只补缺失字段 */
+        const needsTimeoutRepair = (stored.replyTimeoutSec === 0 || stored.replyTimeoutSec === '0')
+            && stored.replyTimeoutConfigured !== true;
+        const needsSave = needsTimeoutRepair
+            || JSON.stringify(normalizePluginSettings(stored)) !== JSON.stringify(pluginSettings);
+        if (!needsSave || persistPluginSettings()) {
+            /* 服务器配置已完整可用后，才精确清掉插件自己的旧键 */
+            removeLegacyPluginStorage();
+        }
+        return true;
+    }
+
+    applyPluginSettings(legacy.settings);
+    /* 首次安装与旧版升级都在这里写入服务器；写入成功后才删除浏览器旧键 */
+    if (persistPluginSettings()) {
+        removeLegacyPluginStorage();
+    }
+    return true;
+}
+
+/* ST clean hook：删除本插件配置、原生 QR 集合及精确命名的旧浏览器键。
+   常驻 slash 命令只存在于当前页面内存，由清理后的页面刷新统一释放，无需单独注销。 */
+async function cleanExtensionData() {
+    await removeQuickReplyEntrySet().catch((error) => {
+        console.warn(`[${PLUGIN_KEY}] 清理 QR 入口集合失败`, error);
+    });
+    const context = getStContextSafe();
+    if (context && context.extensionSettings) {
+        delete context.extensionSettings[PLUGIN_KEY];
+        if (typeof context.saveSettingsDebounced === 'function') {
+            context.saveSettingsDebounced();
+        }
+    }
+    removeLegacyPluginStorage();
+}
+
+export { cleanExtensionData };
+
 function setMasterEnabled(enabled) {
     masterEnabled = enabled;
-    try {
-        localStorage.setItem(STORAGE_MASTER_KEY, enabled ? '1' : '0');
-    } catch (e) { /* ignore */ }
+    persistPluginSettings();
     updateMasterToggleUI();
     
     if (panelEl && isPanelVisible) {
@@ -3158,14 +4151,15 @@ function updateMasterToggleUI() {
     }
 }
 
-/* 从 localStorage 加载内容预览开关状态（默认关闭）
+/* 从 ST 扩展设置加载内容预览开关状态（默认关闭）
    @returns {boolean} 是否开启内容预览 */
 function loadContentPreview() {
-    try { return localStorage.getItem(STORAGE_PREVIEW_KEY) === '1'; } catch (e) { return false; }
+    return !!(pluginSettings && pluginSettings.contentPreview);
 }
 
 function saveContentPreview(enabled) {
-    try { localStorage.setItem(STORAGE_PREVIEW_KEY, enabled ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (pluginSettings) pluginSettings.contentPreview = !!enabled;
+    persistPluginSettings();
 }
 
 function toggleContentPreview() {
@@ -3199,33 +4193,192 @@ function updatePreviewToggleUI() {
 
 /* ── 偏好设置（持久化 + 图标态） ─────────────── */
 
-/* 偏好设置键 → localStorage 存储键 映射 */
-const PREF_STORAGE_KEYS = {
-    badgeDefault: STORAGE_PREF_BADGE_DEFAULT,
-    followStTheme: STORAGE_PREF_FOLLOW_ST_THEME,
-    mobileFull: STORAGE_PREF_MOBILE_FULL,
-    clickOutside: STORAGE_PREF_CLICK_OUTSIDE,
-    filterPersist: STORAGE_PREF_FILTER_PERSIST,
-    minimal: STORAGE_PREF_MINIMAL,
-};
-
-/* 从 localStorage 加载全部偏好设置（默认全关；存储值 !== '1' 一律视为关） */
+/* 从 ST 扩展设置加载全部偏好设置（默认全关） */
 function loadPreferences() {
     for (const key of Object.keys(preferences)) {
-        try { preferences[key] = localStorage.getItem(PREF_STORAGE_KEYS[key]) === '1'; }
-        catch (e) { preferences[key] = false; }
+        preferences[key] = !!(pluginSettings && pluginSettings[key]);
     }
 }
 
-/* 持久化单个偏好设置到 localStorage（与现有开关同一机制：'1'/'0'） */
+/* 同步偏好里的数字输入框：打开面板、失焦修正和提交后都回到当前有效值 */
+function syncPrefNumberInputUI(selector, value) {
+    const input = prefOverlayEl ? prefOverlayEl.querySelector(selector) : null;
+    if (!input) return;
+    input.value = String(value);
+    input.classList.remove('rlog-pref-input-invalid');
+}
+
+function syncReplyTimeoutInputUI() {
+    syncPrefNumberInputUI('#rlog-reply-timeout-input', replyTimeoutSec);
+}
+
+function syncTokenWarningThresholdInputUI() {
+    syncPrefNumberInputUI('#rlog-token-warning-input', tokenWarningThreshold);
+}
+
+function syncMaxRecordsInputUI() {
+    syncPrefNumberInputUI('#rlog-max-records-input', MAX_RECORDS);
+}
+
+/* 限制连续非法输入时的 toast 频率，避免长按或连续粘贴反复刷新提示 */
+function showPrefNumberInputNotice(text) {
+    const now = Date.now();
+    if (now - prefNumberNoticeAt < PREF_NUMBER_NOTICE_INTERVAL_MS) return;
+    prefNumberNoticeAt = now;
+    showPinToast(text);
+}
+
+/* 读取并修正数字偏好输入；合法时返回整数，非法时恢复有效值并返回 null */
+function commitPrefIntegerInput(input, { min, max, getCurrent, unit }) {
+    const raw = input.value.trim();
+    const value = Number(raw);
+    const valid = /^[0-9]+$/.test(raw)
+        && Number.isInteger(value)
+        && value >= min
+        && value <= max;
+    if (!valid) {
+        showPrefNumberInputNotice(`已恢复为 ${getCurrent()}${unit}`);
+        input.value = String(getCurrent());
+        input.classList.remove('rlog-pref-input-invalid');
+        return null;
+    }
+    input.value = String(value);
+    input.classList.remove('rlog-pref-input-invalid');
+    return value;
+}
+
+/* 数字偏好输入：拦截非数字字符，输入期间保留草稿；失焦时修正非法值，关闭面板时再提交 */
+function bindPrefIntegerInput(input, { min, max, getCurrent, invalidText, unit }) {
+    if (!input) return;
+
+    input.addEventListener('beforeinput', (e) => {
+        if (!e.inputType || !e.inputType.startsWith('insert')) return;
+        const inserted = e.data != null
+            ? e.data
+            : (e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+        if (!inserted) return;
+
+        const start = input.selectionStart == null ? input.value.length : input.selectionStart;
+        const end = input.selectionEnd == null ? start : input.selectionEnd;
+        const nextValue = input.value.slice(0, start) + inserted + input.value.slice(end);
+        const nextNumber = Number(nextValue);
+        if (!/^[0-9]+$/.test(nextValue)
+            || !Number.isInteger(nextNumber)
+            || nextNumber > max) {
+            e.preventDefault();
+            showPrefNumberInputNotice(invalidText);
+        }
+    });
+
+    /* 兜底处理浏览器自动填充等未经过 beforeinput 的写入 */
+    input.addEventListener('input', () => {
+        const digits = input.value.replace(/[^0-9]/g, '');
+        if (digits !== input.value) {
+            input.value = digits;
+            showPrefNumberInputNotice(invalidText);
+        }
+        const value = Number(input.value);
+        const invalid = input.value !== ''
+            && (!Number.isInteger(value) || value > max);
+        input.classList.toggle('rlog-pref-input-invalid', invalid);
+        if (invalid) showPrefNumberInputNotice(invalidText);
+    });
+
+    input.addEventListener('blur', () => {
+        const raw = input.value.trim();
+        const value = Number(raw);
+        const valid = /^[0-9]+$/.test(raw)
+            && Number.isInteger(value)
+            && value >= min
+            && value <= max;
+        if (!valid) {
+            input.value = String(getCurrent());
+            showPrefNumberInputNotice(`已恢复为 ${getCurrent()}${unit}`);
+        } else {
+            input.value = String(value);
+        }
+        input.classList.remove('rlog-pref-input-invalid');
+    });
+}
+
+/* 提交等待回复超时：只接受 0～3600 的整数秒；非法输入恢复上次有效值 */
+function commitReplyTimeoutPreference() {
+    const input = prefOverlayEl ? prefOverlayEl.querySelector('#rlog-reply-timeout-input') : null;
+    if (!input) return false;
+    const value = commitPrefIntegerInput(input, {
+        min: MIN_REPLY_TIMEOUT_SEC,
+        max: MAX_REPLY_TIMEOUT_SEC,
+        getCurrent: () => replyTimeoutSec,
+        unit: ' 秒',
+        invalidText: '只能输入 0～3600 的整数秒',
+    });
+    if (value == null) return false;
+
+    if (value !== replyTimeoutSec) {
+        replyTimeoutSec = value;
+        if (!pluginSettings) pluginSettings = createDefaultPluginSettings();
+        pluginSettings.replyTimeoutSec = replyTimeoutSec;
+        pluginSettings.replyTimeoutConfigured = true;
+        persistPluginSettings();
+    }
+    syncReplyTimeoutInputUI();
+    return true;
+}
+
+/* 提交 Token 闪烁提醒阈值：只接受 0～1000000 的整数；0 完全关闭自定义警示层 */
+function commitTokenWarningThresholdPreference() {
+    const input = prefOverlayEl ? prefOverlayEl.querySelector('#rlog-token-warning-input') : null;
+    if (!input) return false;
+    const value = commitPrefIntegerInput(input, {
+        min: MIN_TOKEN_WARNING_THRESHOLD,
+        max: MAX_TOKEN_WARNING_THRESHOLD,
+        getCurrent: () => tokenWarningThreshold,
+        unit: ' tokens',
+        invalidText: '闪烁提醒阈值只能是 0～1000000 的整数',
+    });
+    if (value == null) return false;
+
+    if (value !== tokenWarningThreshold) {
+        tokenWarningThreshold = value;
+        if (!pluginSettings) pluginSettings = createDefaultPluginSettings();
+        pluginSettings.tokenWarningThreshold = tokenWarningThreshold;
+        persistPluginSettings();
+        refreshTokenTierClasses();
+    }
+    syncTokenWarningThresholdInputUI();
+    return true;
+}
+
+/* 提交记录上限：只接受 10～100 的整数；合法值沿用 setMaxRecords 的持久化与裁剪流程 */
+function commitMaxRecordsPreference() {
+    const input = prefOverlayEl ? prefOverlayEl.querySelector('#rlog-max-records-input') : null;
+    if (!input) return false;
+    const value = commitPrefIntegerInput(input, {
+        min: MIN_MAX_RECORDS,
+        max: MAX_MAX_RECORDS,
+        getCurrent: () => MAX_RECORDS,
+        unit: ' 条',
+        invalidText: '记录上限只能是 10～100 的整数',
+    });
+    if (value == null) return false;
+
+    if (value !== MAX_RECORDS) setMaxRecords(value);
+    syncMaxRecordsInputUI();
+    return true;
+}
+
+/* 持久化单个偏好设置到 ST 扩展设置 */
 function savePreference(key, value) {
-    try { localStorage.setItem(PREF_STORAGE_KEYS[key], value ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (!pluginSettings) pluginSettings = createDefaultPluginSettings();
+    pluginSettings[key] = !!value;
+    persistPluginSettings();
 }
 
 /* 是否至少有一项偏好处于激活（用于切换「偏好设置」入口图标 fa-heart ↔ fa-heart-circle-check） */
 function hasActivePreference() {
-    return preferences.badgeDefault || preferences.followStTheme || preferences.mobileFull
-        || preferences.clickOutside || preferences.filterPersist || preferences.minimal;
+    return preferences.badgeDefault || preferences.quickReplyEntry || preferences.hideExtensionEntry
+        || preferences.followStTheme || preferences.mobileFull || preferences.clickOutside
+        || preferences.filterPersist || preferences.minimal;
 }
 
 /* 更新「偏好设置」入口图标：任意偏好激活 → fa-heart-circle-check，全部关闭 → fa-heart */
@@ -3252,19 +4405,44 @@ function syncPrefToggleUI() {
     });
 }
 
-/* 设置某个偏好：更新状态 + 持久化 + 刷新图标态与开关视觉 */
+/* 仅当修改后仍有菜单、浮标或 QR 中的至少一个入口时，才允许修改入口相关偏好。 */
+function wouldLeaveNoEntry(nextPreferences) {
+    return nextPreferences.hideExtensionEntry
+        && !nextPreferences.badgeDefault
+        && !nextPreferences.quickReplyEntry;
+}
+
+/* 设置某个偏好：先检查入口约束，再更新状态、持久化并刷新相关界面 */
 function setPreference(key, value) {
-    if (!(key in preferences)) return;
-    preferences[key] = !!value;
+    if (!(key in preferences)) return false;
+    const nextValue = !!value;
+    const nextPreferences = { ...preferences, [key]: nextValue };
+    if (ENTRY_PREFERENCE_KEYS.includes(key) && wouldLeaveNoEntry(nextPreferences)) {
+        showPinToast('请至少保留一个入口为可见状态');
+        return false;
+    }
+
+    preferences[key] = nextValue;
     savePreference(key, preferences[key]);
     updatePrefButtonIcon();
     syncPrefToggleUI();
-    /* 偏好开关的即时行为：多数开关只被对应逻辑读取标志，个别需要立即生效的按 key 处理 */
-    if (key === 'mobileFull') updateMobileFullscreenClass();
+    /* 偏好开关的即时行为：多数开关只被对应逻辑读取标志，个别需要立即生效的按 key 处理。
+       mobileFull 在移动端同步一次当前状态；此后仍由手动全屏覆盖优先，刷新时再按偏好初始化。 */
     if (key === 'filterPersist' && preferences.filterPersist) saveFilterState();
     if (key === 'minimal') updateMinimalClass();
+    if (key === 'mobileFull') setPreferenceMobileFullBehavior();
     if (key === 'followStTheme') setPreferenceFollowStThemeBehavior();
     if (key === 'badgeDefault') setPreferenceBadgeDefaultBehavior();
+    if (key === 'quickReplyEntry') syncQuickReplyEntry();
+    if (key === 'hideExtensionEntry') syncMenuEntryVisibility();
+    return true;
+}
+
+/* 移动端切换「默认全屏」时同步一次当前状态；桌面端只保存偏好，不改变当前布局。 */
+function setPreferenceMobileFullBehavior() {
+    if (!isMobileViewport()) return;
+    manualFullscreenOverride = preferences.mobileFull;
+    syncFullscreenUI();
 }
 
 /* 「昼夜模式跟随 ST 主题」切换后的即时行为：开启→挂 ST 主题监听并立即同步（面板已打开时按
@@ -3295,21 +4473,42 @@ function setPreferenceBadgeDefaultBehavior() {
     }
 }
 
-/* 判断「移动端全屏」当前是否应生效：偏好开启 + 移动端视口（唯一断点 768px）。
-   桌面端因断点隔离，该项始终不生效，不影响其它逻辑。 */
-function isMobileFullActive() {
-    return preferences.mobileFull && window.matchMedia('(max-width: 768px)').matches;
+/* 计算页面初始全屏状态：仅初始化时调用。移动端偏好开启则默认全屏，否则默认普通状态。 */
+function initFullscreenState() {
+    initialFullscreenActive = !!(preferences.mobileFull && isMobileViewport());
+    manualFullscreenOverride = null;
 }
 
-/* 应用/撤销「移动端全屏」：给面板加/去 .rlog-mobile-fullscreen 类，样式由 CSS 移动端适配区负责。
-   切换偏好、打开面板、初始化时各调用一次，保证面板窗口位置/尺寸始终与偏好一致。 */
-function updateMobileFullscreenClass() {
+/* 当前实际全屏状态：用户手动切换后由覆盖值决定，否则使用初始化时冻结的默认值。 */
+function isFullscreenActive() {
+    return manualFullscreenOverride === null ? initialFullscreenActive : manualFullscreenOverride;
+}
+
+/* 同步全屏类、按钮图标与面板尺寸相关维护。只读取缓存状态，不重新读取偏好或视口断点。 */
+function syncFullscreenUI() {
     if (!panelEl) return;
-    const active = isMobileFullActive();
-    const changed = panelEl.classList.contains('rlog-mobile-fullscreen') !== active;
-    panelEl.classList.toggle('rlog-mobile-fullscreen', active);
-    /* 面板尺寸变了 → 正文换行宽度可能变化：跑一次带宽维护（宽度一旦变化它会先全量恢复再重新卸载） */
-    if (changed) scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
+    const active = isFullscreenActive();
+    const changed = panelEl.classList.contains('rlog-fullscreen') !== active;
+    panelEl.classList.toggle('rlog-fullscreen', active);
+
+    const btn = panelEl.querySelector('#rlog-fullscreen-btn');
+    const icon = btn ? btn.querySelector('i') : null;
+    if (btn && icon) {
+        icon.className = active ? 'fa-solid fa-window-restore' : 'fa-solid fa-window-maximize';
+        const title = active ? '恢复' : '最大化';
+        btn.title = title;
+        btn.setAttribute('aria-label', title);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+
+    /* 面板尺寸变了 → 重测吸顶并让正文带宽维护按新几何恢复/卸载；面板隐藏时等打开流程统一处理 */
+    if (changed && isPanelVisible) scheduleViewportSync();
+}
+
+/* 用户点击最大化/恢复：仅改写内存中的手动覆盖值，不修改偏好设置。 */
+function toggleFullscreen() {
+    manualFullscreenOverride = !isFullscreenActive();
+    syncFullscreenUI();
 }
 
 /* 应用/撤销「极简模式」：把 .rlog-minimal 类加到影子宿主（而非面板）上，
@@ -3320,12 +4519,14 @@ function updateMinimalClass() {
     shadowHostEl.classList.toggle('rlog-minimal', !!preferences.minimal);
 }
 
-/* 打开偏好设置浮层：
-   先收起「更多」抽屉，再显示遮罩浮层（设置面板居中显示）。 */
+/* 打开偏好设置浮层：保留当前「更多」抽屉，只显示遮罩浮层（设置面板居中显示）。 */
 function openPrefPanel() {
     if (!prefOverlayEl) return;
-    closeMoreDrawer();
     syncPrefToggleUI();
+    syncMaxRecordsInputUI();
+    syncReplyTimeoutInputUI();
+    syncTokenWarningThresholdInputUI();
+    prefNumberNoticeAt = 0;
     prefOverlayEl.classList.add('rlog-pref-open');
     /* 等一帧让遮罩显示、测量完成，再更新滚动提示箭头 */
     requestAnimationFrame(() => updatePrefScrollArrows());
@@ -3335,6 +4536,12 @@ function openPrefPanel() {
    遮罩点击不触发关闭；「点击面板外关闭」偏好针对的是整个插件主面板，与浮层无关。 */
 function closePrefPanel() {
     if (!prefOverlayEl) return;
+    /* 仅在浮层确实打开时提交，避免重复关闭把旧草稿再次写回 */
+    if (prefOverlayEl.classList.contains('rlog-pref-open')) {
+        commitMaxRecordsPreference();
+        commitReplyTimeoutPreference();
+        commitTokenWarningThresholdPreference();
+    }
     prefOverlayEl.classList.remove('rlog-pref-open');
 }
 
@@ -3353,11 +4560,12 @@ function updatePrefScrollArrows() {
 }
 
 function loadTheme() {
-    try { return localStorage.getItem(STORAGE_THEME_KEY) === 'light'; } catch (e) { return false; }
+    return pluginSettings ? pluginSettings.theme !== 'dark' : true;
 }
 
 function saveTheme(isLight) {
-    try { localStorage.setItem(STORAGE_THEME_KEY, isLight ? 'light' : 'dark'); } catch (e) { /* ignore */ }
+    if (pluginSettings) pluginSettings.theme = isLight ? 'light' : 'dark';
+    persistPluginSettings();
 }
 
 function applyTheme() {
@@ -3401,25 +4609,17 @@ function initPanelThemeFollow(animate) {
     panelThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 }
 
-/* 从 localStorage 加载用户设定的最大记录数（无保存值或值非法时返回默认值） */
+/* 从 ST 扩展设置加载用户设定的最大记录数（无保存值或值非法时返回默认值） */
 function loadMaxRecords() {
-    try {
-        const raw = localStorage.getItem(STORAGE_MAX_RECORDS_KEY);
-        if (raw !== null && raw !== undefined) {
-            const num = parseInt(raw, 10);
-            /* 合法性校验：必须是有效整数且在允许范围内 */
-            if (!isNaN(num) && num >= MIN_MAX_RECORDS && num <= MAX_MAX_RECORDS) {
-                return num;
-            }
-        }
-    } catch (e) { /* ignore */ }
-    return DEFAULT_MAX_RECORDS;
+    const value = pluginSettings ? Number(pluginSettings.maxRecords) : DEFAULT_MAX_RECORDS;
+    return Number.isInteger(value) && value >= MIN_MAX_RECORDS && value <= MAX_MAX_RECORDS
+        ? value
+        : DEFAULT_MAX_RECORDS;
 }
 
 function saveMaxRecords(value) {
-    try {
-        localStorage.setItem(STORAGE_MAX_RECORDS_KEY, String(value));
-    } catch (e) { /* ignore */ }
+    if (pluginSettings) pluginSettings.maxRecords = value;
+    persistPluginSettings();
 }
 
 /* 设置新的最大记录数上限：更新全局变量、持久化、裁剪超出上限的记录、刷新标题栏显示
@@ -3445,104 +4645,6 @@ function setMaxRecords(newMax) {
 }
 
 /* ── 通用弹窗 ─────────────────────────── */
-
-/* 创建并显示设置最大记录数的对话框（双击标题栏文字时触发） */
-function showMaxRecordsDialog() {
-    if (maxRecordsDialog) {
-        maxRecordsDialog.remove();
-    }
-
-    /* 使用 inline style 设置定位尺寸，防止父页面 CSS (如 transform) 破坏 position:fixed 的参考系 */
-    const overlay = document.createElement('div');
-    overlay.className = 'rlog-dialog-overlay';
-    overlay.style.cssText = `
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        width: 100vw !important;
-        height: 100vh !important;
-        max-width: 100vw !important;
-        max-height: 100vh !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        z-index: 9999 !important;
-    `;
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) {
-            closeMaxRecordsDialog();
-        }
-    });
-
-    const dialog = document.createElement('div');
-    dialog.className = 'rlog-dialog';
-
-    if (isLightTheme) {
-        dialog.classList.add('rlog-dialog-light');
-    }
-
-        dialog.innerHTML = `
-        <div class="rlog-dialog-header">
-            <span>设置记录上限</span>
-            <button class="rlog-dialog-close" title="关闭"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="rlog-dialog-body">
-            <p class="rlog-dialog-desc">
-                请输入记录上限，范围 ${MIN_MAX_RECORDS} ~ ${MAX_MAX_RECORDS}。
-            </p>
-            <div class="rlog-dialog-input-row">
-                <input type="number" class="rlog-dialog-input" 
-                       id="rlog-max-records-input" 
-                       min="${MIN_MAX_RECORDS}" max="${MAX_MAX_RECORDS}" 
-                       value="${MAX_RECORDS}" 
-                       placeholder="${MAX_RECORDS}">
-                <button class="rlog-dialog-btn rlog-dialog-btn-confirm" id="rlog-dialog-confirm">确定</button>
-            </div>
-
-        </div>
-    `;
-
-    overlay.appendChild(dialog);
-    /* 弹窗挂到影子根（而非 document.body）：同时被主题隔离，且避免挂到带 transform 的面板内破坏 fixed 参考系 */
-    if (panelShadowRoot) panelShadowRoot.appendChild(overlay);
-    maxRecordsDialog = overlay;
-
-    dialog.querySelector('.rlog-dialog-close').addEventListener('click', closeMaxRecordsDialog);
-
-    dialog.querySelector('#rlog-dialog-confirm').addEventListener('click', () => {
-        const input = dialog.querySelector('#rlog-max-records-input');
-        const rawValue = parseInt(input.value, 10);
-        if (!isNaN(rawValue)) {
-            const clamped = Math.max(MIN_MAX_RECORDS, Math.min(MAX_MAX_RECORDS, rawValue));
-            setMaxRecords(clamped);
-        }
-        closeMaxRecordsDialog();
-    });
-
-    dialog.querySelector('#rlog-max-records-input').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            dialog.querySelector('#rlog-dialog-confirm').click();
-        } else if (e.key === 'Escape') {
-            closeMaxRecordsDialog();
-        }
-    });
-
-    setTimeout(() => {
-        const input = dialog.querySelector('#rlog-max-records-input');
-        if (input) {
-            input.focus();
-            input.select();
-        }
-    }, 100);
-}
-
-function closeMaxRecordsDialog() {
-    if (maxRecordsDialog) {
-        maxRecordsDialog.remove();
-        maxRecordsDialog = null;
-    }
-}
 
 /* HTMLElement|null: 当前确认弹窗的 DOM 元素 */
 let confirmDialogEl = null;
@@ -3662,6 +4764,10 @@ function resetSearchIfActive() {
 
     /* 清除所有高亮标记 */
     if (searchState) {
+        const counter = searchState.searchEl
+            ? searchState.searchEl.querySelector('.rlog-search-count')
+            : null;
+        cancelSearchCountEdit(counter ? counter.querySelector('.rlog-search-count-current') : null);
         const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
         if (listEl) restoreSearchHighlights(listEl);
 
@@ -3683,8 +4789,6 @@ function resetSearchIfActive() {
         searchState = null;
     }
 
-    /* 搜索框被移除时若仍处于聚焦态，blur 不保证触发：兜底解除面板高度冻结 */
-    unfreezePanelForSearchKeyboard();
 }
 
 /* Set<string>: \s 等价的空白字符集合（避免循环内逐字符正则开销） */
@@ -3717,11 +4821,10 @@ function normalizeTextWithMap(text) {
     return { normalized, map };
 }
 
-/* 在指定记录的所有消息中查找匹配（纯字符串扫描、不碰 DOM，长文本下性能稳定）。双方都做归一化，
+/* 在一条记录的所有可见消息中查找匹配（纯字符串扫描、不碰 DOM，长文本下性能稳定）。双方都做归一化，
    跨换行/复制进来的空格也能匹配；返回的 start/end 是原始内容偏移，可直接用于高亮。
-   @param {number} recordIndex @param {string} keyword @returns {Array<{msgIdx,start,end}>} */
-function findMatchesInRecord(recordIndex, keyword) {
-    const record = records[recordIndex];
+   @param {object} record @param {string} keyword @returns {Array<{msgIdx,start,end}>} */
+function findMatchesInRecordData(record, keyword) {
     if (!record || !record.messages || !keyword) return [];
 
     const normalizedKeyword = keyword.replace(/\s+/g, ' ').trim();
@@ -3737,14 +4840,20 @@ function findMatchesInRecord(recordIndex, keyword) {
     record.messages.forEach((msg, msgIdx) => {
         /* 角色筛选隐藏的子消息不参与搜索：内容不在 DOM 中，导航高亮无法定位 */
         if (!isMessageVisible(msg)) return;
-        addContentMatches(msg.content, msgIdx, normalizedKeyword, lowerKeyword, matches, plainScan);
+        addContentMatches(getMessageDisplayText(msg), msgIdx, normalizedKeyword, lowerKeyword, matches, plainScan);
     });
     /* 回复作为最后一条伪消息参与搜索（msgIdx = messages.length） */
     if (record.reply && isMessageVisible(record.reply)) {
-        addContentMatches(record.reply.content, record.messages.length, normalizedKeyword, lowerKeyword, matches, plainScan);
+        addContentMatches(getMessageDisplayText(record.reply), record.messages.length,
+            normalizedKeyword, lowerKeyword, matches, plainScan);
     }
 
     return matches;
+}
+
+/* 单条搜索按记录下标取数据的兼容入口。 */
+function findMatchesInRecord(recordIndex, keyword) {
+    return findMatchesInRecordData(records[recordIndex], keyword);
 }
 
 /* 把消息原文换算成「页面显示文字」：渲染走 <pre>，解析器会做两件事，这里逐条对齐
@@ -3814,7 +4923,7 @@ function restoreSearchHighlights(listEl) {
     markedItems.forEach((item) => {
         const msg = getMessageByIndex(records[Number(item.dataset.record)], Number(item.dataset.msg));
         const contentEl = item.querySelector('.rmsg-content');
-        if (msg && contentEl) contentEl.textContent = toRenderedText(msg.content);
+        if (msg && contentEl) contentEl.textContent = toRenderedText(getMessageDisplayText(msg));
     });
 }
 
@@ -3905,23 +5014,23 @@ function highlightRange(contentEl, start, end, className = 'rlog-search-mark-cur
     return mark;
 }
 
-/* 高亮本条记录内所有匹配（黄色，不含当前命中——它由 applyCurrentMatch 画橙色）。
+/* 高亮一条指定记录内的匹配（黄色，不含当前命中——它由调用方另行画橙色）。
    每条消息一次性构造「文本节点 + <mark>」片段并整体替换内容区子节点：
    逐处 Range.surroundContents 是在同一文本块里反复切开，代价随该块内命中数超线性增长
    （实测单块 420 处时最后 60 处比最初 60 处贵十几倍），而一次性构造是线性的、
    产出 DOM 与逐处包裹等价（同样的 mark 类名与 data-match-idx，文字用 textContent 写入无需转义）。
-   @param {HTMLElement} recordEl @param {number} recordIndex */
-function highlightAllMatches(recordEl, recordIndex) {
-    if (!searchState || !recordEl) return;
-    const record = records[recordIndex];
-    if (!record) return;
+   @param {HTMLElement} recordEl @param {object} record
+   @param {Array<{match: object, idx: number}>} indexedMatches 当前记录内带全局下标的匹配
+   @param {number} currentIdx 当前橙色命中下标 */
+function highlightRecordMatches(recordEl, record, indexedMatches, currentIdx) {
+    if (!recordEl || !record || !Array.isArray(indexedMatches)) return;
     /* 折叠记录的正文还未生成，高亮落点要在补建后的子树里找 */
     ensureRecordBody(recordEl);
 
     /* 按消息分组（跳过当前命中，橙色单独绘制），并保留匹配在 matches 中的下标供 mark 记录 */
     const matchesByMsg = new Map();
-    searchState.matches.forEach((match, idx) => {
-        if (idx === searchState.currentIdx) return;
+    indexedMatches.forEach(({ match, idx }) => {
+        if (idx === currentIdx) return;
         if (!matchesByMsg.has(match.msgIdx)) matchesByMsg.set(match.msgIdx, []);
         matchesByMsg.get(match.msgIdx).push({ match, idx });
     });
@@ -3942,7 +5051,7 @@ function highlightAllMatches(recordEl, recordIndex) {
         if (!contentEl) return;
 
         /* 同一消息内按 start 升序拼片段：文本节点与 mark 元素交替，末尾补剩余文本 */
-        const text = toRenderedText(msg.content);
+        const text = toRenderedText(getMessageDisplayText(msg));
         const sorted = msgMatches.slice().sort((a, b) => a.match.start - b.match.start);
         const fragment = document.createDocumentFragment();
         let cursor = 0;
@@ -3965,6 +5074,15 @@ function highlightAllMatches(recordEl, recordIndex) {
         /* 文字与高度都没变，但内容区被整体替换过，顺手刷一次该消息的滚动条拇指（无进度条时为空操作） */
         requestThumbUpdate(contentEl);
     });
+}
+
+/* 单条搜索的适配层：本条记录的全部匹配都来自同一个 searchState。 */
+function highlightAllMatches(recordEl, recordIndex) {
+    if (!searchState || !recordEl) return;
+    const record = records[recordIndex];
+    if (!record) return;
+    const indexedMatches = searchState.matches.map((match, idx) => ({ match, idx }));
+    highlightRecordMatches(recordEl, record, indexedMatches, searchState.currentIdx);
 }
 
 /* 返回当前应使用的滚动行为：极简模式用 'auto' 直接跳转，否则 'smooth' 平滑。 */
@@ -4035,6 +5153,232 @@ function scrollToMatch(markEl, contentEl) {
     }
 }
 
+/* 搜索计数跳转的运行时配置：当前序号元素是临时编辑控件，不把回调写进 DOM 属性 */
+const searchCountEditConfigs = new WeakMap();
+
+/* 本次计数编辑中是否有尚未提交的数字变化 */
+const searchCountEditDirty = new WeakSet();
+
+/* 取计数三部分；兼容尚未切换到分段 DOM 的旧节点 */
+function getSearchCountParts(counter) {
+    if (!counter) return null;
+    let current = counter.querySelector('.rlog-search-count-current');
+    let separator = counter.querySelector('.rlog-search-count-separator');
+    let total = counter.querySelector('.rlog-search-count-total');
+    if (!current || !separator || !total) {
+        counter.replaceChildren();
+        current = document.createElement('span');
+        current.className = 'rlog-search-count-current';
+        current.setAttribute('role', 'textbox');
+        current.setAttribute('aria-label', '当前搜索结果序号');
+        current.setAttribute('aria-multiline', 'false');
+        current.setAttribute('inputmode', 'numeric');
+        current.setAttribute('enterkeyhint', 'go');
+        current.spellcheck = false;
+        separator = document.createElement('span');
+        separator.className = 'rlog-search-count-separator';
+        separator.textContent = '/';
+        total = document.createElement('span');
+        total.className = 'rlog-search-count-total';
+        counter.append(current, separator, total);
+    }
+    return { current, separator, total };
+}
+
+/* 选中当前序号内容：鼠标点击与键盘 Tab 进入后都可直接覆盖输入 */
+function selectSearchCountContent(currentEl) {
+    if (!currentEl) return;
+    const selection = currentEl.getRootNode().getSelection
+        ? currentEl.getRootNode().getSelection()
+        : window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(currentEl);
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+
+/* 数字编辑后把光标放回末尾，避免粘贴多位数字时每一步都把光标重置到行首 */
+function moveSearchCountCaretToEnd(currentEl) {
+    const selection = currentEl.getRootNode().getSelection
+        ? currentEl.getRootNode().getSelection()
+        : window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(currentEl);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+
+/* 用户输入的序号为 1 基；仅接受纯十进制整数 */
+function parseSearchCountValue(currentEl, total) {
+    const text = currentEl ? currentEl.textContent.trim() : '';
+    if (!/^\d+$/.test(text)) return null;
+    const value = Number(text);
+    return Number.isSafeInteger(value) && value >= 1 && value <= total ? value : null;
+}
+
+function markSearchCountInvalid(currentEl, invalid) {
+    if (!currentEl) return;
+    currentEl.classList.toggle('rlog-search-count-invalid', invalid);
+    currentEl.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+}
+
+/* 退出数字编辑并恢复真实当前序号；blur=true 时同时移开焦点，供 Esc 使用 */
+function cancelSearchCountEdit(currentEl, { blur = false } = {}) {
+    if (!currentEl || currentEl.dataset.rlogCountEditing !== '1') return;
+    const config = searchCountEditConfigs.get(currentEl);
+    currentEl.dataset.rlogCountEditing = '0';
+    searchCountEditDirty.delete(currentEl);
+    currentEl.textContent = String(config ? config.getCurrent() : 0);
+    markSearchCountInvalid(currentEl, false);
+    if (blur) currentEl.blur();
+}
+
+/* 提交数字跳转；Enter 留在计数控件内便于继续跳转，失焦提交则随焦点离开 */
+function submitSearchCountEdit(currentEl, { fromBlur = false } = {}) {
+    if (!currentEl || currentEl.dataset.rlogCountEditing !== '1') return false;
+    const config = searchCountEditConfigs.get(currentEl);
+    if (!config) return false;
+    if (!searchCountEditDirty.has(currentEl)) {
+        if (fromBlur) cancelSearchCountEdit(currentEl);
+        return false;
+    }
+
+    /* 全局结果可能已被新记录 / 筛选修正；先同步数据再按最新总数校验 */
+    config.prepareCommit?.();
+    const total = config.getTotal();
+    const value = parseSearchCountValue(currentEl, total);
+    if (value === null) {
+        if (fromBlur) {
+            cancelSearchCountEdit(currentEl);
+        } else {
+            markSearchCountInvalid(currentEl, true);
+        }
+        return false;
+    }
+
+    if (fromBlur) currentEl.dataset.rlogCountEditing = '0';
+    searchCountEditDirty.delete(currentEl);
+    markSearchCountInvalid(currentEl, false);
+    config.onJump(value - 1);
+    if (!fromBlur && currentEl.isConnected) {
+        requestAnimationFrame(() => {
+            if (currentEl.dataset.rlogCountEditing === '1'
+                && currentEl.getRootNode().activeElement === currentEl) {
+                selectSearchCountContent(currentEl);
+            }
+        });
+    }
+    return true;
+}
+
+/* 把计数当前序号绑定为可键盘操作的数字编辑器 */
+function bindSearchCountJump(counter, options) {
+    const parts = getSearchCountParts(counter);
+    if (!parts) return;
+    const { current } = parts;
+    searchCountEditConfigs.set(current, {
+        getCurrent: options.getCurrent,
+        getTotal: options.getTotal,
+        onJump: options.onJump,
+        beforeEdit: options.beforeEdit,
+        prepareCommit: options.prepareCommit,
+    });
+    if (current.dataset.rlogCountJumpBound === '1') return;
+    current.dataset.rlogCountJumpBound = '1';
+
+    let isComposing = false;
+    current.addEventListener('focus', () => {
+        const config = searchCountEditConfigs.get(current);
+        if (!config || config.getTotal() <= 1) return;
+        config.beforeEdit?.();
+        if (config.getTotal() <= 1) {
+            current.blur();
+            return;
+        }
+        current.dataset.rlogCountEditing = '1';
+        searchCountEditDirty.delete(current);
+        markSearchCountInvalid(current, false);
+        selectSearchCountContent(current);
+    });
+
+    current.addEventListener('compositionstart', () => { isComposing = true; });
+    current.addEventListener('compositionend', () => {
+        isComposing = false;
+        current.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    current.addEventListener('input', () => {
+        if (isComposing || current.dataset.rlogCountEditing !== '1') return;
+        const config = searchCountEditConfigs.get(current);
+        /* 只限制极端长输入；超出总数仍原样保留并标红，交由用户修正 */
+        const maxDigits = 9;
+        const clean = current.textContent.replace(/\D/g, '').slice(0, maxDigits);
+        if (clean !== current.textContent) {
+            current.textContent = clean;
+            moveSearchCountCaretToEnd(current);
+        }
+        searchCountEditDirty.add(current);
+        markSearchCountInvalid(current, false);
+    });
+    current.addEventListener('keydown', (event) => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            submitSearchCountEdit(current);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelSearchCountEdit(current, { blur: true });
+        }
+    });
+    current.addEventListener('blur', () => {
+        if (current.dataset.rlogCountEditing === '1') {
+            submitSearchCountEdit(current, { fromBlur: true });
+        }
+    });
+}
+
+/* 刷新计数显示；总数大于 1 时当前序号可编辑，其余情况保持只读 */
+function updateSearchCountDisplay(counter, current, total) {
+    const parts = getSearchCountParts(counter);
+    if (!parts) return;
+    const currentEl = parts.current;
+    const editable = total > 1;
+    if (!editable) cancelSearchCountEdit(currentEl);
+
+    currentEl.textContent = String(current);
+    parts.total.textContent = String(total);
+    currentEl.style.minWidth = `${Math.max(1, String(total).length)}ch`;
+    currentEl.contentEditable = editable ? 'plaintext-only' : 'false';
+    currentEl.tabIndex = editable ? 0 : -1;
+    currentEl.title = editable ? '输入序号后按 Enter 跳转' : '';
+    currentEl.setAttribute(
+        'aria-label',
+        total > 0
+            ? `当前第 ${current} 个结果，共 ${total} 个${editable ? '，可输入序号跳转' : ''}`
+            : '暂无搜索结果',
+    );
+    markSearchCountInvalid(currentEl, false);
+}
+
+/* 点击其他按钮前取消数字编辑，避免失焦先跳一次、按钮再执行另一次操作 */
+function installSearchCountEditDismissal(rootEl) {
+    if (!rootEl || rootEl.dataset.rlogCountDismissBound === '1') return;
+    rootEl.dataset.rlogCountDismissBound = '1';
+    rootEl.addEventListener('pointerdown', (event) => {
+        const currentEl = rootEl.querySelector('.rlog-search-count-current[data-rlog-count-editing="1"]');
+        if (!currentEl || currentEl.contains(event.target)) return;
+        const counter = currentEl.closest('.rlog-search-count');
+        if (counter && counter.contains(event.target)) return;
+        if (event.target.closest?.('button, input, a, [contenteditable="true"], [contenteditable="plaintext-only"], [role="button"]')) {
+            cancelSearchCountEdit(currentEl);
+        }
+    }, true);
+}
+
 /* 更新搜索框计数显示（如 3/18） */
 function updateSearchCounter() {
     if (!searchState || !searchState.searchEl) return;
@@ -4043,7 +5387,7 @@ function updateSearchCounter() {
 
     const total = searchState.matches.length;
     const current = total > 0 ? searchState.currentIdx + 1 : 0;
-    counter.textContent = `${current}/${total}`;
+    updateSearchCountDisplay(counter, current, total);
 
     /* 有关键词但无命中：计数转红 */
     counter.classList.toggle('rlog-search-count-empty', !!searchState.keyword && total === 0);
@@ -4175,11 +5519,353 @@ function closeSearch() {
     resetSearchIfActive();
 }
 
+/* 当前可见记录的实际显示顺序：置顶组在前、普通组在后，组内保持 records 原顺序。 */
+function getDisplayOrderedVisibleRecords(visibleRecords = getVisibleRecords()) {
+    return visibleRecords.filter(record => record.pinned)
+        .concat(visibleRecords.filter(record => !record.pinned));
+}
+
+/* 全局搜索控件统一取引用；抽屉或面板尚未构建时返回空对象。 */
+function getGlobalSearchEls() {
+    if (!panelEl) return {};
+    return {
+        input: panelEl.querySelector('#rlog-global-search-input'),
+        counter: panelEl.querySelector('.rlog-global-search-count'),
+        submit: panelEl.querySelector('#rlog-global-search-submit'),
+        next: panelEl.querySelector('.rlog-global-search-next'),
+        prev: panelEl.querySelector('.rlog-global-search-prev'),
+    };
+}
+
+/* 按钮只在「已有结果、关键词未变、搜索后来了新内容」三项同时满足时变成「更新」。 */
+function updateGlobalSearchSubmitState() {
+    const { input, submit } = getGlobalSearchEls();
+    if (!input || !submit) return;
+    const canUpdate = !!globalSearchState
+        && input.value === globalSearchState.keyword
+        && globalSearchState.hasNewData;
+    const text = canUpdate ? '更新' : '搜索';
+    const label = submit.querySelector('.rlog-global-search-submit-label');
+    if (label) label.textContent = text;
+    else submit.textContent = text;
+    submit.title = text;
+    submit.classList.toggle('rlog-global-search-update', canUpdate);
+}
+
+/* 刷新全局计数、上下箭头与「搜索 / 更新」按钮。 */
+function updateGlobalSearchControls() {
+    const { counter, next, prev } = getGlobalSearchEls();
+    const total = globalSearchState ? globalSearchState.matches.length : 0;
+    const current = total > 0 && globalSearchState.currentIdx >= 0
+        ? globalSearchState.currentIdx + 1
+        : 0;
+    if (counter) {
+        updateSearchCountDisplay(counter, current, total);
+        counter.classList.toggle(
+            'rlog-search-count-empty',
+            !!(globalSearchState && globalSearchState.keyword && total === 0),
+        );
+    }
+    if (prev) prev.disabled = total <= 1;
+    if (next) next.disabled = total <= 1;
+    updateGlobalSearchSubmitState();
+}
+
+/* 新记录或 Response 到达后只标记可更新，不自动重搜当前关键词。 */
+function markGlobalSearchDataChanged() {
+    if (!globalSearchState) return;
+    globalSearchState.hasNewData = true;
+    updateGlobalSearchSubmitState();
+}
+
+/* 按记录对象查找当前 DOM；列表重建后只能通过 records 中的实时下标重新定位。 */
+function getRecordElForSearchRecord(record) {
+    if (!panelEl || !record) return null;
+    const recordIndex = records.indexOf(record);
+    if (recordIndex < 0) return null;
+    const listEl = panelEl.querySelector('#rlog-list');
+    return listEl
+        ? listEl.querySelector(`.rlog-record[data-record-index="${recordIndex}"]`)
+        : null;
+}
+
+/* 列表成员变化时清理已不可见的匹配和高亮登记，并修正当前下标。
+   clearDomHighlights=true 用于整表重建前：保留记录与手动浏览属性，只标记旧 DOM 高亮已失效。
+   updateControls=false 供计数编辑提交时先修整结果，保留用户正在输入的数字。 */
+function reconcileGlobalSearchResults(clearDomHighlights = false, updateControls = true) {
+    if (!globalSearchState) return;
+    const previousCurrent = globalSearchState.currentIdx >= 0
+        ? globalSearchState.matches[globalSearchState.currentIdx]
+        : null;
+    const previousIndex = globalSearchState.currentIdx;
+    const visibleSet = new Set(getDisplayOrderedVisibleRecords());
+    const nextMatches = globalSearchState.matches.filter(match => visibleSet.has(match.record));
+
+    if (nextMatches.length !== globalSearchState.matches.length) {
+        globalSearchState.matches = nextMatches;
+        if (nextMatches.length === 0) {
+            globalSearchState.currentIdx = -1;
+        } else if (previousCurrent) {
+            const keptIndex = nextMatches.indexOf(previousCurrent);
+            globalSearchState.currentIdx = keptIndex >= 0
+                ? keptIndex
+                : Math.min(previousIndex, nextMatches.length - 1);
+        } else {
+            globalSearchState.currentIdx = -1;
+        }
+    }
+    globalSearchState.highlightedRecords.forEach((entry, record) => {
+        if (!visibleSet.has(record)) {
+            globalSearchState.highlightedRecords.delete(record);
+            return;
+        }
+        if (clearDomHighlights) entry.domPainted = false;
+    });
+    if (updateControls) updateGlobalSearchControls();
+}
+
+/* 清空全局搜索会话；不动记录折叠状态、滚动位置，也不把焦点送回输入框。 */
+function resetGlobalSearch() {
+    const { counter } = getGlobalSearchEls();
+    cancelSearchCountEdit(counter ? counter.querySelector('.rlog-search-count-current') : null);
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (listEl) restoreSearchHighlights(listEl);
+    globalSearchState = null;
+    const { input } = getGlobalSearchEls();
+    if (input) input.value = '';
+    updateGlobalSearchControls();
+}
+
+/* 展开目标记录和消息，补建正文并返回内容区。 */
+function prepareGlobalSearchTarget(match) {
+    const recordEl = getRecordElForSearchRecord(match.record);
+    if (!recordEl) return null;
+    const msg = getMessageByIndex(match.record, match.msgIdx);
+    if (!msg) return null;
+
+    let recordExpandedNow = false;
+    if (match.record.collapsed) {
+        match.record.collapsed = false;
+        recordEl.classList.add('expanded');
+        recordEl.classList.remove('collapsed');
+        recordExpandedNow = true;
+    }
+    ensureRecordBody(recordEl);
+    if (recordExpandedNow) queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
+    if (msg.collapsed) {
+        msg.collapsed = false;
+        const msgItem = recordEl.querySelector(`.rmsg-item[data-msg="${match.msgIdx}"]`);
+        if (msgItem) {
+            msgItem.classList.add('expanded');
+            msgItem.classList.remove('collapsed');
+        }
+    }
+    const contentEl = ensureMessageContent(
+        recordEl.querySelector(`.rmsg-item[data-msg="${match.msgIdx}"]`),
+    );
+    return contentEl ? { recordEl, contentEl } : null;
+}
+
+/* 收集一条记录在现有全局结果中的全部匹配，并保留它们在 matches 里的下标。 */
+function getGlobalSearchMatchesForRecord(record) {
+    const indexedMatches = [];
+    if (!globalSearchState || !record) return indexedMatches;
+    globalSearchState.matches.forEach((match, idx) => {
+        if (match.record === record) indexedMatches.push({ match, idx });
+    });
+    return indexedMatches;
+}
+
+/* 为一条已展开记录补绘全局搜索高亮；manual=true 表示用户手动浏览，离开当前结果后仍保留。
+   这里只读取现有结果，不修改 currentIdx、计数或滚动位置。 */
+function paintGlobalSearchRecord(recordEl, record, {
+    manual = false,
+    redraw = false,
+    paintCurrent = true,
+    currentMatchIdx = null,
+} = {}) {
+    if (!globalSearchState || !recordEl || !record || record.collapsed) return false;
+    const indexedMatches = getGlobalSearchMatchesForRecord(record);
+    if (indexedMatches.length === 0) return false;
+
+    const previousEntry = globalSearchState.highlightedRecords.get(record);
+    const keepManual = !!(manual || previousEntry?.manual);
+    if (previousEntry?.domPainted && !redraw) {
+        previousEntry.manual = keepManual;
+        return true;
+    }
+
+    /* 重绘前先还原这条记录，避免重复调用叠加 mark。 */
+    restoreSearchHighlights(recordEl);
+    const candidateIdx = Number.isInteger(currentMatchIdx)
+        ? currentMatchIdx
+        : globalSearchState.currentIdx;
+    const currentIdx = candidateIdx >= 0
+        && globalSearchState.matches[candidateIdx]?.record === record
+        ? candidateIdx
+        : -1;
+    highlightRecordMatches(recordEl, record, indexedMatches, currentIdx);
+    globalSearchState.highlightedRecords.set(record, {
+        manual: keepManual,
+        domPainted: true,
+    });
+
+    if (paintCurrent && currentIdx >= 0) {
+        const currentMatch = globalSearchState.matches[currentIdx];
+        const msg = getMessageByIndex(record, currentMatch.msgIdx);
+        if (msg) {
+            if (msg.collapsed) {
+                msg.collapsed = false;
+                const msgItem = recordEl.querySelector(`.rmsg-item[data-msg="${currentMatch.msgIdx}"]`);
+                if (msgItem) {
+                    msgItem.classList.add('expanded');
+                    msgItem.classList.remove('collapsed');
+                }
+            }
+            const contentEl = ensureMessageContent(
+                recordEl.querySelector(`.rmsg-item[data-msg="${currentMatch.msgIdx}"]`),
+            );
+            if (contentEl) {
+                highlightRange(
+                    contentEl,
+                    currentMatch.start,
+                    currentMatch.end,
+                    'rlog-search-mark-current',
+                );
+                requestThumbUpdate(contentEl);
+            }
+        }
+    }
+    return true;
+}
+
+/* 手动展开记录或消息时补绘黄色高亮；不改变当前橙色项与计数。 */
+function refreshGlobalSearchHighlightsForManualOpen(recordEl, record) {
+    if (!globalSearchState || !recordEl || !record) return;
+    paintGlobalSearchRecord(recordEl, record, { manual: true });
+}
+
+/* 整表重建后用记录对象重新定位并补绘当前展开的高亮记录。
+   折叠记录不在这里强制建正文，等用户再次展开时再走手动补绘路径。 */
+function repaintGlobalSearchHighlightsAfterRender(listEl) {
+    if (!globalSearchState || !listEl) return;
+    globalSearchState.highlightedRecords.forEach((entry, record) => {
+        if (record.collapsed) return;
+        const recordEl = getRecordElForSearchRecord(record);
+        if (!recordEl || !listEl.contains(recordEl)) return;
+        paintGlobalSearchRecord(recordEl, record, {
+            manual: entry.manual,
+            redraw: true,
+        });
+    });
+}
+
+/* 跳到全局结果中的指定匹配。跨记录时只重画离开/进入的目标记录；手动浏览过的记录保留黄色。 */
+function applyGlobalCurrentMatch(matchIdx) {
+    if (!globalSearchState || !panelEl) return;
+    const previousIdx = globalSearchState.currentIdx;
+    const previousCurrent = previousIdx >= 0
+        ? globalSearchState.matches[previousIdx]
+        : null;
+    const match = globalSearchState.matches[matchIdx];
+    if (!match) return;
+    const target = prepareGlobalSearchTarget(match);
+    if (!target) return;
+
+    const { recordEl, contentEl } = target;
+    const record = match.record;
+    const highlightedEntry = globalSearchState.highlightedRecords.get(record);
+    const sameRecord = previousCurrent?.record === record;
+
+    if (sameRecord && highlightedEntry?.domPainted) {
+        clearCurrentHighlight(previousIdx);
+        removeYellowMarkByMatchIdx(matchIdx);
+    } else {
+        if (previousCurrent && !sameRecord) {
+            const previousRecord = previousCurrent.record;
+            const previousEntry = globalSearchState.highlightedRecords.get(previousRecord);
+            if (previousEntry?.manual) {
+                /* 用户手动浏览过的记录保留黄色，只把离开的橙色当前项降级。 */
+                clearCurrentHighlight(previousIdx);
+            } else {
+                const previousRecordEl = getRecordElForSearchRecord(previousRecord);
+                if (previousRecordEl) restoreSearchHighlights(previousRecordEl);
+                globalSearchState.highlightedRecords.delete(previousRecord);
+            }
+        }
+        paintGlobalSearchRecord(recordEl, record, {
+            manual: !!highlightedEntry?.manual,
+            redraw: true,
+            paintCurrent: false,
+            currentMatchIdx: matchIdx,
+        });
+    }
+
+    /* 只在搜索导航时异步补建进度条；正文已经可见，延迟成本不影响本次高亮。 */
+    setTimeout(() => createScrollbarForContent(contentEl), SCROLLBAR_CREATE_DELAY_MS);
+    const markEl = highlightRange(contentEl, match.start, match.end, 'rlog-search-mark-current');
+    globalSearchState.currentIdx = matchIdx;
+    updateGlobalSearchControls();
+    if (markEl) scrollToMatch(markEl, contentEl);
+}
+
+/* 在全局结果序列中循环跳转。 */
+function navigateGlobalSearch(direction) {
+    if (!globalSearchState || globalSearchState.matches.length === 0) return;
+    reconcileGlobalSearchResults(false);
+    if (globalSearchState.matches.length === 0) return;
+    const total = globalSearchState.matches.length;
+    let nextIdx = globalSearchState.currentIdx + direction;
+    if (nextIdx >= total) nextIdx = 0;
+    if (nextIdx < 0) nextIdx = total - 1;
+    applyGlobalCurrentMatch(nextIdx);
+}
+
+/* 点击搜索/更新或按 Enter 执行：始终以当前可见列表和当前输入关键词为准。 */
+function performGlobalSearch() {
+    if (!panelEl) return;
+    const { input } = getGlobalSearchEls();
+    if (!input) return;
+    const listEl = panelEl.querySelector('#rlog-list');
+    if (listEl) restoreSearchHighlights(listEl);
+    globalSearchState = null;
+
+    const keyword = input.value;
+    if (!keyword) {
+        updateGlobalSearchControls();
+        return;
+    }
+
+    const matches = [];
+    getDisplayOrderedVisibleRecords().forEach((record) => {
+        findMatchesInRecordData(record, keyword).forEach((match) => {
+            matches.push({ record, ...match });
+        });
+    });
+    globalSearchState = {
+        keyword,
+        matches,
+        currentIdx: -1,
+        hasNewData: false,
+        highlightedRecords: new Map(),
+    };
+    if (matches.length > 0) {
+        globalSearchState.currentIdx = 0;
+        applyGlobalCurrentMatch(0);
+    } else {
+        updateGlobalSearchControls();
+    }
+}
+
 /* 为指定记录打开搜索模式（排他原则：一次仅一条记录处于搜索状态）
    @param {number} recordIndex 记录索引 */
 function openSearchForRecord(recordIndex) {
     if (!panelEl) return;
-    /* 排他：先关闭任何已有的搜索 */
+    /* 排他：全局搜索抽屉打开时先关闭，再退出其它单条搜索 */
+    if (globalSearchOpen) {
+        setGlobalSearchDrawerOpen(false);
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
+    }
     resetSearchIfActive();
 
     const listEl = panelEl.querySelector('#rlog-list');
@@ -4215,7 +5901,7 @@ function openSearchForRecord(recordIndex) {
     searchBox.innerHTML = `
         <div class="rlog-search-input-wrap">
             <input type="text" class="rlog-search-input" placeholder="搜索..." autocomplete="off" spellcheck="false">
-            <span class="rlog-search-count">0/0</span>
+            <span class="rlog-search-count" role="group" aria-label="搜索结果序号">0/0</span>
         </div>
         <button class="rlog-search-next" title="下一个 (Enter)" disabled>
             <i class="fa-solid fa-arrow-down"></i>
@@ -4243,11 +5929,25 @@ function openSearchForRecord(recordIndex) {
     const input = searchBox.querySelector('.rlog-search-input');
     const prevBtn = searchBox.querySelector('.rlog-search-prev');
     const nextBtn = searchBox.querySelector('.rlog-search-next');
+    const counterEl = searchBox.querySelector('.rlog-search-count');
 
-    /* 移动端：聚焦期间冻结面板高度，避免虚拟键盘顶起/收起时面板跟着变高变矮引发卡顿
-       （只钉高度、不改其它尺寸来源；失焦即还原并补跑一次视口同步） */
-    input.addEventListener('focus', () => freezePanelForSearchKeyboard(input));
-    input.addEventListener('blur', () => unfreezePanelForSearchKeyboard());
+    bindSearchCountJump(counterEl, {
+        getCurrent: () => searchState && searchState.currentIdx >= 0
+            ? searchState.currentIdx + 1
+            : 0,
+        getTotal: () => searchState ? searchState.matches.length : 0,
+        beforeEdit: () => {
+            if (searchDebounceTimer === null) return;
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = null;
+            performSearch(recordIndex, input.value);
+        },
+        onJump: (targetIdx) => {
+            const match = searchState ? searchState.matches[targetIdx] : null;
+            if (match) applyCurrentMatch(match.msgIdx, targetIdx, false);
+        },
+    });
+    updateSearchCounter();
 
     /* boolean: 输入法组合状态标志（拼音未上屏时 input 事件不触发搜索） */
     let isComposing = false;
@@ -4372,12 +6072,13 @@ function createDefaultFilterState() {
     };
 }
 
-/* 把当前筛选状态持久化到 localStorage（仅当「筛选状态持久化」开关开启时调用） */
+/* 把当前筛选状态持久化到 ST 扩展设置（仅当「筛选状态持久化」开关开启时调用） */
 function saveFilterState() {
-    try { localStorage.setItem(STORAGE_FILTER_STATE_KEY, JSON.stringify(filterState)); } catch (e) { /* 忽略异常 */ }
+    if (pluginSettings) pluginSettings.filterState = sanitizeFilterState(filterState);
+    persistPluginSettings();
 }
 
-/* 清洗从 localStorage 读回的筛选状态：以默认全开为基准，逐分组逐键只采纳布尔值，其余回退 true */
+/* 清洗从 ST 扩展设置读回的筛选状态：以默认全开为基准，逐分组逐键只采纳布尔值，其余回退 true */
 function sanitizeFilterState(state) {
     const def = createDefaultFilterState();
     if (!state || typeof state !== 'object') return def;
@@ -4392,17 +6093,11 @@ function sanitizeFilterState(state) {
     return out;
 }
 
-/* 加载持久化的筛选状态并覆盖当前 filterState（仅当「筛选状态持久化」开关开启时读取）；
+/* 加载 ST 中持久化的筛选状态并覆盖当前 filterState（仅当「筛选状态持久化」开关开启时读取）；
    无值 / 解析失败 / 数据非法一律回退默认全开。 */
 function loadPersistedFilterState() {
     if (!preferences.filterPersist) return;
-    try {
-        const raw = localStorage.getItem(STORAGE_FILTER_STATE_KEY);
-        if (raw === null) return;
-        filterState = sanitizeFilterState(JSON.parse(raw));
-    } catch (e) { /* 解析失败：回退默认全开 */
-        filterState = createDefaultFilterState();
-    }
+    filterState = sanitizeFilterState(pluginSettings && pluginSettings.filterState);
 }
 
 /* 模型品牌图标 SVG 路径（simple-icons 单色 24×24，fill="currentColor"，内联无图片文件） */
@@ -4473,9 +6168,18 @@ function updateFilterChipUI() {
     });
 }
 
+/* 筛选会改变可见记录范围：先结束全局搜索，避免旧结果只能移除、无法补入新记录。
+   普通抽屉操作已在打开筛选时满足该约束；这里兜底标题旁重置、空状态重置与引导恢复等入口。 */
+function endGlobalSearchForFilterChange() {
+    if (!globalSearchOpen) return;
+    setGlobalSearchDrawerOpen(false);
+    scheduleBodyBandPass(panelEl ? panelEl.querySelector('#rlog-list') : null);
+}
+
 /* 切换单个筛选开关并重建列表（重建时单条搜索自动退出，与现有渲染行为一致） */
 function toggleFilterChip(group, value) {
     if (!filterState[group] || !(value in filterState[group])) return;
+    endGlobalSearchForFilterChange();
     filterState[group][value] = !filterState[group][value];
     updateFilterChipUI();
     panelContentDirty = true;
@@ -4488,6 +6192,7 @@ function toggleFilterChip(group, value) {
    @param {boolean} [persist=true] 是否在重置后落盘（用户手动重置=真；引导等程序化调用传 false，
       避免引导在开始时把用户已持久化的筛选覆盖成全开） */
 function resetFilters(persist = true) {
+    endGlobalSearchForFilterChange();
     filterState = createDefaultFilterState();
     updateFilterChipUI();
     updateFilterIndicator();
@@ -4550,24 +6255,30 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
     const roleClass = getRoleClass(msg.role);
     const roleLabel = getRoleLabel(msg.role);
     const collapsedClass = msg.collapsed ? 'collapsed' : 'expanded';
-    /* tokenPrecise 为 true 表示使用了 ST 原生分词器的精确值，不显示 ~ 估算标记 */
-    const tokenPrefix = msg.tokenPrecise ? '' : '~';
-    /* 内容预览文字（仅当开关开启时显示，或处于强制预览演示状态） */
+    const tokenText = getMessageTokenText(msg);
+    const displayText = getMessageDisplayText(msg);
+    const readBtnHidden = shouldOfferMessageRead(msg) ? '' : ' hidden';
+    /* Response 固定显示性能指标，不显示内容预览；其它角色仍跟随预览开关 */
     const showPreview = forcePreviewState !== null ? forcePreviewState : contentPreviewEnabled;
-    const previewHtml = showPreview
-        ? `<span class="rmsg-preview-text" title="${escapeHtml(msg.content.slice(0, 200))}">${escapeHtml(getContentPreview(msg.content))}</span>`
-        : '';
+    const previewHtml = msg.role === 'response'
+        ? buildResponseMetaHtml(msg, recordIdx, msgIdx)
+        : (showPreview
+            ? `<span class="rmsg-preview-text" title="${escapeHtml(displayText.slice(0, 200))}">${escapeHtml(getContentPreview(displayText))}</span>`
+            : '');
     /* 折叠消息不生成正文：正文要留到展开时由 ensureMessageContent() 补建，否则每次整表重建
        都要把全部记录（含折叠部分）的提示词正文重新拼串并解析一遍。
        <pre> 后垫一个换行：解析器吞掉的是它，正文（含开头空行）原样显示 */
-    const contentHtml = msg.collapsed ? '' : `<pre class="rmsg-content">\n${escapeHtml(msg.content)}</pre>`;
+    const contentHtml = msg.collapsed ? '' : `<pre class="rmsg-content">\n${escapeHtml(displayText)}</pre>`;
     return `
         <div class="rmsg-item ${collapsedClass} ${roleClass}" data-record="${recordIdx}" data-msg="${msgIdx}">
             <div class="rmsg-header">
                 <span class="rmsg-expand-icon"><i class="fa-solid fa-chevron-right"></i></span>
                 <span class="rmsg-role-badge ${roleClass}">${escapeHtml(roleLabel)}</span>
                 ${previewHtml}
-                <span class="rmsg-tokens">${tokenPrefix}${msg.tokens} tokens</span>
+                <span class="rmsg-tokens">${tokenText}</span>
+                <button class="rmsg-read-btn" data-record="${recordIdx}" data-msg="${msgIdx}" title="查看消息" aria-label="查看此消息全文"${readBtnHidden}>
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                </button>
                 <button class="rmsg-copy-btn" data-record="${recordIdx}" data-msg="${msgIdx}" title="复制此消息">
                     <i class="fa-solid fa-copy"></i>
                 </button>
@@ -4630,14 +6341,28 @@ function ensureMessageContent(msgItem) {
     if (!msg) return null;
     const pre = document.createElement('pre');
     pre.className = 'rmsg-content';
-    pre.textContent = toRenderedText(msg.content);
+    pre.textContent = toRenderedText(getMessageDisplayText(msg));
     msgItem.appendChild(pre);
     return pre;
+}
+
+/* 阈值变更时只刷新当前可见记录的 Token 配色，不重建列表，避免打断滚动、搜索与展开状态 */
+function refreshTokenTierClasses() {
+    const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
+    if (!listEl) return;
+    listEl.querySelectorAll('.rlog-record[data-record-index]').forEach((recordEl) => {
+        const record = records[Number(recordEl.dataset.recordIndex)];
+        const tokenEl = recordEl.querySelector('.rlog-token-num');
+        if (!record || !tokenEl) return;
+        tokenEl.className = `rlog-token-num ${getTokenTierClass(getRecordPromptTokens(record))}`;
+    });
 }
 
 function renderPanelContent() {
     if (!panelEl) return;
 
+    /* 整表重建会替换 ⓘ 锚点：先收起说明，避免浮层留在失效元素旁 */
+    hideResponseMetaTip();
     /* 重建 DOM 前必须先清理搜索状态（搜索高亮、搜索框引用旧 DOM 节点会失效） */
     resetSearchIfActive();
 
@@ -4646,6 +6371,8 @@ function renderPanelContent() {
 
     /* 可见记录只算一次：「N隐藏」指示器与下面渲染列表共用同一份（每条记录都要遍历子消息判角色筛选） */
     const visibleRecords = getVisibleRecords();
+    /* 全局搜索独立于单条搜索：整表重建前只清理已不可见的匹配，不重搜正文、不丢关键词。 */
+    reconcileGlobalSearchResults(true);
     updateHeaderTitle();
     updateFilterIndicator(visibleRecords);
 
@@ -4685,13 +6412,12 @@ function renderPanelContent() {
 
     /* 只渲染可见记录；置顶记录先渲染、普通记录随后，子组内保持 records 原顺序（新→旧）。
        DOM 的 data-record-index 写入 records 中的真实索引而非显示位置，按索引取数的路径无需改语义 */
-    const displayRecords = visibleRecords.filter(r => r.pinned)
-        .concat(visibleRecords.filter(r => !r.pinned));
+    const displayRecords = getDisplayOrderedVisibleRecords(visibleRecords);
     const displayIndexes = displayRecords.map((rec) => records.indexOf(rec));
     listEl.innerHTML = displayRecords
         .map((rec, vi) => {
             const idx = displayIndexes[vi];
-            const totalTokens = getTotalTokens(rec.messages);
+            const totalTokens = getRecordPromptTokens(rec);
             const collapsedClass = rec.collapsed ? 'collapsed' : 'expanded';
             const pinnedClass = rec.pinned ? 'rlog-pinned' : '';
             const sourceLabel = getSourceLabel(rec.source);
@@ -4722,7 +6448,7 @@ function renderPanelContent() {
                             <span class="rlog-source-badge ${sourceClass}" title="${escapeHtml(sourceTitle)}"><span class="rlog-status-dot"></span>${escapeHtml(sourceLabel)}</span>
                             <span class="rlog-time">${escapeHtml(rec.timestamp)}</span>
                             <span class="rlog-model-badge" title="请求模型">${escapeHtml(rec.modelName || '未知模型')}</span>
-                            <span class="rlog-total-tokens">${recordTokenPrefix}<span class="rlog-token-num rlog-token-tier-${getTokenTier(totalTokens)}">${totalTokens}</span>&nbsp;tokens [${rec.messages.length}]</span>
+                            <span class="rlog-total-tokens">${recordTokenPrefix}<span class="rlog-token-num ${getTokenTierClass(totalTokens)}">${totalTokens}</span>&nbsp;tokens [${rec.messages.length}]</span>
                         </div>
                         <div class="rlog-record-actions">
                             <div class="rlog-record-actions-inner" style="display:flex; gap:4px; align-items:center;">
@@ -4730,16 +6456,16 @@ function renderPanelContent() {
                                     <i class="fa-solid fa-magnifying-glass"></i>
                                 </button>
                                 <button class="rlog-msg-expand-btn" data-record="${idx}" title="展开所有消息">
-                                    <i class="fa-solid fa-expand"></i>
+                                    <i class="fa-solid fa-maximize"></i>
                                 </button>
                                 <button class="rlog-msg-collapse-btn" data-record="${idx}" title="折叠所有消息">
-                                    <i class="fa-solid fa-compress-alt"></i>
+                                    <i class="fa-solid fa-minimize"></i>
                                 </button>
                                 <button class="rlog-jump-bottom-btn" data-record="${idx}" title="快速置底">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="4" x2="12" y2="15"></line><line x1="5" y1="20" x2="19" y2="20"></line></svg>
                                 </button>
                                 <button class="rlog-read-full-btn" data-record="${idx}" title="查看全文">
-                                    <i class="fa-solid fa-file-lines"></i>
+                                    <i class="fa-solid fa-clipboard-list"></i>
                                 </button>
                                 <button class="rlog-delete-record-btn" data-record="${idx}" title="删除本条记录">
                                     <i class="fa-solid fa-trash-can"></i>
@@ -4758,6 +6484,9 @@ function renderPanelContent() {
         .join('');
 
     bindListEvents(listEl);
+
+    /* 清单重建会销毁旧 mark；按记录对象重绘当前目标和用户手动打开过的展开记录。 */
+    repaintGlobalSearchHighlightsAfterRender(listEl);
 
     /* 把视口外的正文就地卸载（此刻列表已挂载、几何可测）：本次打开只需为可见部分付排版与绘制成本。
        放在 syncRecordHeaderVars 之前，随后的标题高度重测就落在「正文已卸载」的轻量版面上 */
@@ -4812,74 +6541,88 @@ function syncRecordHeaderVars(listEl) {
 /* boolean: 是否已有「视口尺寸变化」的重测排在下一帧（连续 resize 合并成一帧一次） */
 let viewportSyncQueued = false;
 
-/* number|null: 搜索输入聚焦（虚拟键盘会话）期间被冻结的面板高度(px)；null = 未冻结。
-   仅移动端生效：键盘会缩小布局视口，面板高度若继续用 vh 就会跟着变高变矮，连带触发
-   吸顶重测 / 进度条刷新 / 正文带宽维护等重活。 */
-let searchKeyboardFreezeHeight = null;
-/* HTMLElement|null: 触发本次面板高度冻结的搜索输入框（解除冻结时清理） */
-let searchKeyboardFreezeInput = null;
-/* Array<[string,string,string]>|null: 冻结前面板行内 height/min-height/max-height 的原值快照
-   （含优先级），解除冻结时原样还原——不改变用户手动拖拽缩放后的面板尺寸 */
-let searchKeyboardFreezeStyleSnapshot = null;
+/* number: 当前移动端布局基准对应的视口宽度；0 = 非移动布局或尚未建立基准 */
+let mobilePanelLayoutWidth = 0;
+/* number: 当前移动端布局基准高度(px) */
+let mobilePanelLayoutHeight = 0;
+/* boolean: 是否已有「记录列表活动控件可见性」检查排在下一帧 */
+let activeListControlVisibilityQueued = false;
 
 /* 移动端视口判定：与样式断点一致（唯一断点 768px） */
 function isMobileViewport() {
     return window.matchMedia('(max-width: 768px)').matches;
 }
 
-/* 搜索输入聚焦期间冻结面板高度（仅移动端）：键盘会缩小布局视口，面板高度若继续由 vh 决定
-   就会跟着变高变矮，连带触发吸顶重测 / 进度条刷新 / 正文带宽维护（批量卸载与恢复），输入时
-   明显卡顿。这里在聚焦瞬间（视口还没缩）记下面板实测高度并用内联 !important 钉住；先快照
-   原有行内尺寸，解除时原样还原，用户手动拖拽缩放的结果不受影响。 */
-function freezePanelForSearchKeyboard(inputEl) {
-    if (!panelEl || !inputEl || searchKeyboardFreezeHeight !== null) return;
-    if (!isMobileViewport()) return;
-    const height = panelEl.getBoundingClientRect().height;
-    if (!(height > 0)) return;
-    const props = ['height', 'min-height', 'max-height'];
-    searchKeyboardFreezeStyleSnapshot = props.map((prop) => [
-        prop,
-        panelEl.style.getPropertyValue(prop),
-        panelEl.style.getPropertyPriority(prop),
-    ]);
-    searchKeyboardFreezeHeight = height;
-    searchKeyboardFreezeInput = inputEl;
-    const value = height.toFixed(2) + 'px';
-    props.forEach((prop) => panelEl.style.setProperty(prop, value, 'important'));
-}
-
-/* 解除搜索键盘会话的面板高度冻结：还原行内尺寸快照，再补跑一次视口同步
-   （冻结期间被跳过的重活在这一帧统一执行） */
-function unfreezePanelForSearchKeyboard() {
-    if (searchKeyboardFreezeHeight === null) return;
-    searchKeyboardFreezeHeight = null;
-    searchKeyboardFreezeInput = null;
-    if (panelEl && searchKeyboardFreezeStyleSnapshot) {
-        searchKeyboardFreezeStyleSnapshot.forEach(([prop, value, priority]) => {
-            if (value) panelEl.style.setProperty(prop, value, priority);
-            else panelEl.style.removeProperty(prop);
-        });
+/* 移动端面板的普通上下限和全屏高度只在布局边界、横竖屏或宽度变化时重新采用视口高度；
+   单纯高度变化视为键盘或地址栏遮挡，不改变插件自身布局。 */
+function syncMobilePanelLayoutMetrics(force = false) {
+    if (!panelEl) return false;
+    if (!isMobileViewport()) {
+        const changed = mobilePanelLayoutWidth !== 0;
+        panelEl.style.removeProperty('--rlog-panel-layout-h');
+        panelEl.style.removeProperty('--rlog-mobile-min-h');
+        panelEl.style.removeProperty('--rlog-mobile-max-h');
+        mobilePanelLayoutWidth = 0;
+        mobilePanelLayoutHeight = 0;
+        return changed;
     }
-    searchKeyboardFreezeStyleSnapshot = null;
-    scheduleViewportSync();
+
+    const width = Math.max(1, window.innerWidth);
+    if (!force && mobilePanelLayoutWidth === width) return false;
+    const height = Math.max(1, window.innerHeight);
+    panelEl.style.setProperty('--rlog-panel-layout-h', `${height}px`);
+    panelEl.style.setProperty('--rlog-mobile-min-h', `${Math.round(height * 0.5)}px`);
+    panelEl.style.setProperty('--rlog-mobile-max-h', `${Math.round(height * 0.75)}px`);
+    mobilePanelLayoutWidth = width;
+    mobilePanelLayoutHeight = height;
+    return true;
 }
 
-/* 键盘弹出后搜索框若落到可视区之外（被冻结的面板下沿被键盘盖住），把该记录标题栏（含搜索框）
-   滚到「完整露出」为止——只补足露不出来的那一段（下边被键盘挡住就往上滚刚好露出底边，上边被
-   列表顶边切掉就往下滚刚好露出顶边），不把标题栏直接置顶；已完整可见则不动，不做任何重建与重测。 */
-function ensureSearchInputVisible() {
-    if (searchKeyboardFreezeHeight === null) return;
-    const inputEl = searchKeyboardFreezeInput;
+/* 横竖屏或跨断点后，只修正已经越出当前视口的手动拖拽/缩放几何；未手动改过尺寸时不写内联值。 */
+function clampPanelGeometryAfterLayoutChange() {
+    if (!panelEl || !isPanelVisible || isFullscreenActive()) return;
+    const hasCustomGeometry = !!(panelEl.style.left || panelEl.style.top
+        || panelEl.style.width || panelEl.style.height);
+    if (!hasCustomGeometry) return;
+
+    const viewportWidth = Math.max(1, window.innerWidth);
+    const viewportHeight = Math.max(1, mobilePanelLayoutHeight || window.innerHeight);
+    const rect = panelEl.getBoundingClientRect();
+    const width = Math.min(rect.width, viewportWidth);
+    const height = Math.min(rect.height, viewportHeight);
+
+    if (panelEl.style.width && Math.abs(width - rect.width) > 0.5) {
+        panelEl.style.width = `${width}px`;
+    }
+    if (panelEl.style.height && Math.abs(height - rect.height) > 0.5) {
+        panelEl.style.height = `${height}px`;
+    }
+
+    if (panelEl.style.left) {
+        const maxLeft = Math.max(0, viewportWidth - width);
+        const left = Math.min(Math.max(0, rect.left), maxLeft);
+        if (Math.abs(left - rect.left) > 0.5) panelEl.style.left = `${left}px`;
+    }
+    if (panelEl.style.top) {
+        const maxTop = Math.max(0, viewportHeight - height);
+        const top = Math.min(Math.max(0, rect.top), maxTop);
+        if (Math.abs(top - rect.top) > 0.5) panelEl.style.top = `${top}px`;
+    }
+}
+
+/* 只处理记录列表里的活动控件：键盘遮挡列表内容时才滚动，全局搜索和偏好浮层不参与。 */
+function ensureActiveListControlVisible() {
     const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
-    if (!inputEl || !inputEl.isConnected || !listEl) return;
+    const activeEl = panelShadowRoot ? panelShadowRoot.activeElement : null;
+    if (!activeEl || !listEl || !listEl.contains(activeEl)) return;
     const listRect = listEl.getBoundingClientRect();
-    const headerEl = inputEl.closest('.rlog-record-header');
+    const headerEl = activeEl.closest('.rlog-record-header');
     if (!headerEl) return;
     const headerRect = headerEl.getBoundingClientRect();
-    /* 可视下界取「列表底边」与「布局视口高度」的较小值：Android 键盘挤压页面时，
-       window.innerHeight 就是键盘上沿，而冻结的面板下沿可能落在它下面 */
+    const visualHeight = window.visualViewport ? window.visualViewport.height : Infinity;
+    /* 列表可能因面板稳定高度而延伸到键盘后方；可视下界取三者最小值。 */
     const visibleTop = listRect.top;
-    const visibleBottom = Math.min(listRect.bottom, window.innerHeight);
+    const visibleBottom = Math.min(listRect.bottom, window.innerHeight, visualHeight);
     const margin = 8;
     /* 只补足缺的那一段：正数＝往上滚露出底边，负数＝往下滚露出顶边 */
     let delta = 0;
@@ -4891,19 +6634,51 @@ function ensureSearchInputVisible() {
     if (delta !== 0) listEl.scrollTop += delta;
 }
 
-/* 视口/面板尺寸变化的重测入口：地址栏收放、键盘弹出、拖拽缩放会连续触发 resize，
-   每次都重测全部记录标题栏会成倍放大开销，故合并到下一帧统一执行一次。
-   合并只减少执行次数，不缩减重测内容——尺寸变化最终仍会反映到吸顶偏移。 */
+/* 高度变化可能连续触发多次，活动控件可见性检查合并到下一帧执行。 */
+function scheduleActiveListControlVisibility() {
+    if (activeListControlVisibilityQueued) return;
+    activeListControlVisibilityQueued = true;
+    requestAnimationFrame(() => {
+        activeListControlVisibilityQueued = false;
+        ensureActiveListControlVisible();
+    });
+}
+
+/* 移动端只把宽度变化视为布局变化；高度单独变化只做轻量的活动控件可见性兜底。
+   桌面端保留原有 resize 全量同步行为。 */
+function handleViewportResize() {
+    if (!panelEl) return;
+    const mobile = isMobileViewport();
+    const hadMobileLayout = mobilePanelLayoutWidth !== 0;
+    const widthChanged = mobile && window.innerWidth !== mobilePanelLayoutWidth;
+
+    if (mobile && (widthChanged || !hadMobileLayout)) {
+        syncMobilePanelLayoutMetrics(true);
+        clampPanelGeometryAfterLayoutChange();
+        scheduleViewportSync();
+        return;
+    }
+    if (!mobile && hadMobileLayout) {
+        syncMobilePanelLayoutMetrics();
+        clampPanelGeometryAfterLayoutChange();
+        scheduleViewportSync();
+        return;
+    }
+    if (mobile) {
+        scheduleActiveListControlVisibility();
+        return;
+    }
+    scheduleViewportSync();
+}
+
+/* 面板自身的布局尺寸变化（全屏切换、拖拽缩放等）仍需完整刷新吸顶与正文带宽。 */
 function scheduleViewportSync() {
     if (viewportSyncQueued) return;
     viewportSyncQueued = true;
     requestAnimationFrame(() => {
         viewportSyncQueued = false;
-        /* 搜索键盘会话期间面板高度已冻结，RRL 自身几何没有变化：跳过重活，只兜底确认输入框可见 */
-        if (searchKeyboardFreezeHeight !== null) {
-            ensureSearchInputVisible();
-            return;
-        }
+        /* 移动端提示的可用宽度依赖当前视口和 ⓘ 位置；开着时随视口变化重算 */
+        updateResponseMetaTipLayout();
         syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         /* 视口尺寸变化可能整体改动版面（媒体查询切换内边距/字号等），未必伴随内容区自身尺寸变化，
            这里保留一次全量更新兜底（定向更新只覆盖「观察到的尺寸变化」） */
@@ -4953,7 +6728,7 @@ function preserveScrollTop(action, anchorEl) {
     scheduleBodyBandPass(listEl);
 }
 
-/* 为单个消息条目绑定交互事件（标题栏折叠/展开 + 复制按钮），整表渲染与回复追加共用。
+/* 为单个消息条目绑定交互事件（标题栏折叠/展开 + 阅读/复制按钮），整表渲染与回复追加共用。
    @param {HTMLElement} msgItem .rmsg-item 元素 */
 function bindMsgItemEvents(msgItem) {
     const header = msgItem.querySelector('.rmsg-header');
@@ -4968,6 +6743,15 @@ function bindMsgItemEvents(msgItem) {
             }, header);
         });
     }
+    const readBtn = msgItem.querySelector('.rmsg-read-btn');
+    if (readBtn) {
+        readBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const recIdx = Number(this.dataset.record);
+            const msgIdx = Number(this.dataset.msg);
+            openMessageReadOverlay(recIdx, msgIdx, this);
+        });
+    }
     const copyBtn = msgItem.querySelector('.rmsg-copy-btn');
     if (copyBtn) {
         copyBtn.addEventListener('click', function (e) {
@@ -4977,6 +6761,182 @@ function bindMsgItemEvents(msgItem) {
             copySingleMessage(recIdx, msgIdx, this);
         });
     }
+    const responseInfoBtn = msgItem.querySelector('.rmsg-response-info');
+    if (responseInfoBtn) {
+        responseInfoBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const recIdx = Number(this.dataset.record);
+            const msgIdx = Number(this.dataset.msg);
+            toggleResponseMetaTip(this, recIdx, msgIdx);
+        });
+    }
+}
+
+/* 摘掉当前 Response 说明锚点；元素可能已随整表重建移除 */
+function clearResponseMetaTipAnchor() {
+    if (!responseMetaTipAnchorEl) return;
+    responseMetaTipAnchorEl.style.removeProperty('anchor-name');
+    responseMetaTipAnchorEl.setAttribute('aria-expanded', 'false');
+    responseMetaTipAnchorEl = null;
+}
+
+/* 收起 Response 指标说明并清理锚点 */
+function hideResponseMetaTip() {
+    if (responseMetaTipEl) {
+        try { responseMetaTipEl.hidePopover(); } catch (e) { /* 未显示或无 Popover 支持时忽略 */ }
+        responseMetaTipEl.style.removeProperty('--rlog-response-meta-tip-max-width');
+    }
+    clearResponseMetaTipAnchor();
+}
+
+/* 按当前 ⓘ 位置计算提示到屏幕右缘的可用宽度；只在移动端应用，桌面保持原布局 */
+function updateResponseMetaTipLayout() {
+    if (!responseMetaTipEl) return;
+    responseMetaTipEl.style.removeProperty('--rlog-response-meta-tip-max-width');
+    if (!responseMetaTipAnchorEl || !window.matchMedia('(max-width: 768px)').matches) return;
+    const anchorRect = responseMetaTipAnchorEl.getBoundingClientRect();
+    const shiftX = parseFloat(
+        getComputedStyle(responseMetaTipEl).getPropertyValue('--rlog-response-meta-tip-shift-x'),
+    ) || 0;
+    const availableWidth = document.documentElement.clientWidth - anchorRect.left - shiftX - 8;
+    responseMetaTipEl.style.setProperty(
+        '--rlog-response-meta-tip-max-width',
+        `${Math.max(120, availableWidth)}px`,
+    );
+}
+
+/* 展示策略：固定宽度的 token/费用字段不截断，其余可能较长原始值按上限处理。 */
+const RESPONSE_META_NO_TRUNCATE_KEYS = new Set([
+    ...RESPONSE_META_TOKEN_FIELDS,
+    ...RESPONSE_META_TOKEN_DETAIL_FIELDS.map(([name]) => name),
+    ...RESPONSE_META_GEMINI_TOKEN_RULES.map(([name]) => name),
+    'cost',
+]);
+
+/* 展示用截断：按 Unicode 字符计数，超过上限时保留前 N-3 个字符并追加 ...。 */
+function truncateResponseMetaValue(text) {
+    const chars = Array.from(String(text));
+    if (chars.length <= RESPONSE_META_VALUE_MAX_CHARS) return chars.join('');
+    return `${chars.slice(0, RESPONSE_META_VALUE_MAX_CHARS - 3).join('')}...`;
+}
+
+/* 原始类型只做必要的文字化：数字/布尔完整显示，普通字符串和对象/数组 JSON 限制长度。 */
+function formatResponseMetaValue(field) {
+    const value = field && field.value;
+    let text;
+    if (typeof value === 'string') {
+        text = value;
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+        text = String(value);
+    } else {
+        try {
+            text = JSON.stringify(value);
+        } catch (e) {
+            text = String(value);
+        }
+        if (text == null) text = String(value);
+    }
+    if (field && RESPONSE_META_NO_TRUNCATE_KEYS.has(field.key)) return text;
+    if (typeof value === 'number' || typeof value === 'boolean') return text;
+    return truncateResponseMetaValue(text);
+}
+
+/* 把采集结果转成展示模型；这里只决定重名路径、顺序和值格式，不识别具体接口。 */
+function getResponseMetaTipPresentation(msg) {
+    if (msg && msg.simulated) {
+        return { simulated: '模拟记录 · 未实际发送', disclaimer: '', base: '', fields: [] };
+    }
+    const mode = msg && msg.streaming === true
+        ? '流式'
+        : (msg && msg.streaming === false ? '非流式' : RESPONSE_META_DASH);
+    const baseParts = [mode, `完成 ${formatResponseClock(msg && msg.time)}`];
+    if (msg && Number.isInteger(msg.httpStatus)) baseParts.push(`HTTP ${msg.httpStatus}`);
+
+    const fields = Array.isArray(msg && msg.upstreamMeta) ? msg.upstreamMeta.slice() : [];
+    const keyCounts = new Map();
+    for (const field of fields) {
+        const key = String(field && field.key || '');
+        keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
+    }
+    const rows = fields
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+        .map((field) => {
+            const key = String(field.key || '');
+            return {
+                label: keyCounts.get(key) > 1 ? String(field.path || key) : key,
+                value: formatResponseMetaValue(field),
+            };
+        })
+        .filter((row) => row.label && row.value !== '');
+    return {
+        simulated: '',
+        disclaimer: RESPONSE_META_DISCLAIMER,
+        base: baseParts.join(' · '),
+        fields: rows,
+    };
+}
+
+/* 把展示模型写入 Popover；结构/样式调整集中在这里，不依赖字段来源接口。 */
+function renderResponseMetaTip(msg) {
+    if (!responseMetaTipEl) return;
+    const presentation = getResponseMetaTipPresentation(msg);
+    const fragment = document.createDocumentFragment();
+    if (presentation.simulated) {
+        const simulatedEl = document.createElement('div');
+        simulatedEl.className = 'rlog-response-tip-base';
+        simulatedEl.textContent = presentation.simulated;
+        fragment.appendChild(simulatedEl);
+    } else {
+        const disclaimerEl = document.createElement('div');
+        disclaimerEl.className = 'rlog-response-tip-disclaimer';
+        disclaimerEl.textContent = presentation.disclaimer;
+        fragment.appendChild(disclaimerEl);
+
+        const baseEl = document.createElement('div');
+        baseEl.className = 'rlog-response-tip-base';
+        baseEl.textContent = presentation.base;
+        fragment.appendChild(baseEl);
+
+        if (presentation.fields.length > 0) {
+            const fieldsEl = document.createElement('div');
+            fieldsEl.className = 'rlog-response-tip-fields';
+            for (const row of presentation.fields) {
+                const rowEl = document.createElement('div');
+                rowEl.className = 'rlog-response-tip-field';
+                const keyEl = document.createElement('span');
+                keyEl.className = 'rlog-response-tip-key';
+                keyEl.textContent = `${row.label}:`;
+                const valueEl = document.createElement('span');
+                valueEl.className = 'rlog-response-tip-value';
+                valueEl.textContent = row.value;
+                rowEl.append(keyEl, valueEl);
+                fieldsEl.appendChild(rowEl);
+            }
+            fragment.appendChild(fieldsEl);
+        }
+    }
+    responseMetaTipEl.replaceChildren(fragment);
+}
+
+/* 点击 ⓘ 显示/收起指标说明；Popover 轻关、Esc 与面板内任意滚动收起由浏览器/监听器处理 */
+function toggleResponseMetaTip(anchorEl, recIdx, msgIdx) {
+    if (!responseMetaTipEl || !anchorEl) return;
+    const record = records[recIdx];
+    const msg = record ? getMessageByIndex(record, msgIdx) : null;
+    if (!msg) return;
+    const isSameOpen = responseMetaTipAnchorEl === anchorEl
+        && responseMetaTipEl.matches(':popover-open');
+    if (isSameOpen) {
+        hideResponseMetaTip();
+        return;
+    }
+    clearResponseMetaTipAnchor();
+    responseMetaTipAnchorEl = anchorEl;
+    anchorEl.style.setProperty('anchor-name', '--rlog-response-meta-anchor');
+    anchorEl.setAttribute('aria-expanded', 'true');
+    renderResponseMetaTip(msg);
+    updateResponseMetaTipLayout();
+    try { responseMetaTipEl.showPopover(); } catch (e) { clearResponseMetaTipAnchor(); }
 }
 
 function bindListEvents(listEl) {
@@ -5169,6 +7129,8 @@ function toggleRecordCollapse(index, recordEl) {
         recordEl.classList.remove('collapsed');
         /* 必须先补建正文：「回顶后闪第一条子消息标题」要在这个新生成的子树里取目标 */
         ensureRecordBody(recordEl);
+        /* 全局搜索仍在进行时，手动展开只补黄色高亮，不改变当前橙色与计数。 */
+        refreshGlobalSearchHighlightsForManualOpen(recordEl, records[index]);
         /* 仅当本次折叠确实把列表压回顶部时，才对第一条子消息标题栏闪烁提示；
            停留在顶部反复折叠/展开、新记录出现后的普通展开都不闪 */
         if (recordCollapseToppedEl === recordEl) {
@@ -5284,6 +7246,9 @@ function toggleMessageCollapse(recIdx, msgIdx, msgItem) {
             contentEl.scrollTop = 0; /* 折叠后再展开时，从消息内容顶部开始看 */
             createScrollbarForContent(contentEl);
         }
+        /* 记录此前不是全局搜索高亮对象时，手动展开其消息也补出整条记录的黄色结果。 */
+        const recordEl = msgItem.closest('.rlog-record');
+        if (recordEl) refreshGlobalSearchHighlightsForManualOpen(recordEl, record);
     }
 }
 
@@ -5372,6 +7337,8 @@ function expandRecordMessages(index) {
             el.classList.remove('collapsed');
             ensureMessageContent(el);
         });
+        /* 「展开所有消息」也是手动浏览路径，补出黄色结果但不切换当前项。 */
+        refreshGlobalSearchHighlightsForManualOpen(recordEl, record);
         /* 为消息内容区懒创建进度条（仅视口内立即创建，其余延迟） */
         queueScrollbarsForEls(recordEl.querySelectorAll('.rmsg-content'));
         /* 展开会让下方内容整体下移、把上方带宽外的内容顶进视口：补排一次带宽维护 */
@@ -5562,43 +7529,81 @@ async function copyFullRecord(index, btnEl) {
 async function copySingleMessage(recIdx, msgIdx, btnEl) {
     const msg = getMessageByIndex(records[recIdx], msgIdx);
     if (!msg) return;
-    await doCopy(msg.content, btnEl);
+    await doCopy(getMessageDisplayText(msg), btnEl);
+}
+
+/* Android 文本经系统剪贴板按 UTF-16 传递，用字符数 × 2 做保守体积估算 */
+function shouldWarnLongAndroidCopy(text) {
+    return /Android/i.test(navigator.userAgent || '')
+        && text.length * 2 >= ANDROID_LONG_COPY_WARN_BYTES;
 }
 
 async function doCopy(text, btnEl) {
-    try {
-        await navigator.clipboard.writeText(text);
-        showCopyFeedback(btnEl, true);
-    } catch {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
+    const warnLongContent = shouldWarnLongAndroidCopy(text);
+    let copied = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         try {
-            document.execCommand('copy');
-            showCopyFeedback(btnEl, true);
+            await navigator.clipboard.writeText(text);
+            copied = true;
+        } catch (e) {
+            /* 非安全上下文 / 用户权限拒绝 / 超长内容：继续尝试旧版兼容路径 */
+        }
+    }
+    if (!copied) {
+        let textarea = null;
+        try {
+            textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '0';
+            textarea.style.left = '-9999px';
+            textarea.style.opacity = '0';
+            textarea.setAttribute('readonly', '');
+            document.body.appendChild(textarea);
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+            copied = document.execCommand('copy') === true;
         } catch (e) {
             console.error(`[${PLUGIN_KEY}] 复制失败:`, e);
-            showCopyFeedback(btnEl, false);
+        } finally {
+            if (textarea && textarea.parentNode) textarea.parentNode.removeChild(textarea);
         }
-        document.body.removeChild(textarea);
     }
+    showCopyFeedback(btnEl, copied);
+    if (warnLongContent) showPinToast(ANDROID_LONG_COPY_WARN_TEXT);
+    return copied;
 }
 
-function showCopyFeedback(btnEl, success) {
-    const originalHtml = btnEl.innerHTML;
+/* 按钮异步反馈状态：重复点击时沿用最初图标，避免把上一次的 ✓/✕ 当成原图标恢复 */
+const copyFeedbackStates = new WeakMap();
+
+function showCopyFeedback(btnEl, success, successTitle = '已复制', failureTitle = '复制失败') {
+    if (!btnEl) return;
+    let state = copyFeedbackStates.get(btnEl);
+    if (!state) {
+        state = {
+            originalHtml: btnEl.innerHTML,
+            originalTitle: btnEl.title,
+            timer: null,
+        };
+        copyFeedbackStates.set(btnEl, state);
+    }
+    if (state.timer !== null) clearTimeout(state.timer);
+    btnEl.classList.remove('copy-success', 'copy-fail');
     if (success) {
         btnEl.innerHTML = '<i class="fa-solid fa-check"></i>';
+        btnEl.title = successTitle;
         btnEl.classList.add('copy-success');
     } else {
         btnEl.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        btnEl.title = failureTitle;
         btnEl.classList.add('copy-fail');
     }
-    setTimeout(() => {
-        btnEl.innerHTML = originalHtml;
+    state.timer = setTimeout(() => {
+        btnEl.innerHTML = state.originalHtml;
+        btnEl.title = state.originalTitle;
         btnEl.classList.remove('copy-success', 'copy-fail');
+        state.timer = null;
     }, 1500);
 }
 
@@ -5619,8 +7624,59 @@ function getReadContent(record, format) {
     return getFullPromptText(record);
 }
 
+/* 取请求发起时间；旧记录没有 requestStartedAt 时回退到标题栏记录的请求时间 */
+function getRequestStartedDate(record) {
+    const capturedAt = record && Number(record.requestStartedAt);
+    if (Number.isFinite(capturedAt) && capturedAt > 0) return new Date(capturedAt);
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(
+        (record && typeof record.timestamp === 'string') ? record.timestamp : '',
+    );
+    if (match) {
+        return new Date(
+            Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+            Number(match[4]), Number(match[5]), Number(match[6]),
+        );
+    }
+    return new Date();
+}
+
+/* 导出文件名固定为 Request_YYYYMMDD_HHmmss.txt/json，时间取请求发起时刻 */
+function getExportFileName(record, format) {
+    const date = getRequestStartedDate(record);
+    const stamp = `${date.getFullYear()}`
+        + `${String(date.getMonth() + 1).padStart(2, '0')}`
+        + `${String(date.getDate()).padStart(2, '0')}_`
+        + `${String(date.getHours()).padStart(2, '0')}`
+        + `${String(date.getMinutes()).padStart(2, '0')}`
+        + `${String(date.getSeconds()).padStart(2, '0')}`;
+    return `Request_${stamp}.${format === 'raw' ? 'json' : 'txt'}`;
+}
+
+/* 把当前查看格式导出为文件；Blob 避开 data URL 与系统剪贴板的单次传输上限 */
+function exportReadContent(record, format, btnEl) {
+    try {
+        const content = getReadContent(record, format);
+        const mime = format === 'raw' ? 'application/json' : 'text/plain';
+        const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = getExportFileName(record, format);
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showCopyFeedback(btnEl, true, '已开始导出', '导出失败');
+    } catch (e) {
+        console.error(`[${PLUGIN_KEY}] 导出失败:`, e);
+        showCopyFeedback(btnEl, false, '已开始导出', '导出失败');
+        showPinToast('导出失败');
+    }
+}
+
 function switchReadFormat(format) {
-    if (!readFullOverlayEl) return;
+    if (!readFullOverlayEl || readOverlayMode !== 'record') return;
     readFullFormat = format;
     const record = records[readFullRecordIndex];
     if (!record) return;
@@ -5656,7 +7712,9 @@ function scrollReadContentTo(position) {
     });
 }
 
-function closeReadFullOverlay() {
+function closeReadFullOverlay({ restoreFocus = true } = {}) {
+    const returnFocusEl = readOverlayReturnFocusEl;
+    const shouldRestoreFocus = restoreFocus && readOverlayMode === 'message';
     if (readFullOverlayEl) {
         /* 清理覆盖层内容区的自定义滚动条，避免残留 */
         const readContentEl = readFullOverlayEl.querySelector('.rlog-read-content');
@@ -5667,7 +7725,12 @@ function closeReadFullOverlay() {
         readFullOverlayEl = null;
     }
     readFullRecordIndex = null;
+    readOverlayMode = 'record';
+    readOverlayReturnFocusEl = null;
     document.removeEventListener('keydown', handleReadFullEscape);
+    if (shouldRestoreFocus && returnFocusEl && returnFocusEl.isConnected) {
+        returnFocusEl.focus();
+    }
 }
 
 /* Escape 键关闭覆盖层的处理器 @param {KeyboardEvent} e 键盘事件 */
@@ -5687,10 +7750,12 @@ function openReadFullOverlay(index) {
     if (!record || !panelEl) return;
 
     /* 关闭旧的覆盖层（如有） */
-    closeReadFullOverlay();
+    closeReadFullOverlay({ restoreFocus: false });
 
     readFullRecordIndex = index;
     readFullFormat = 'formatted';
+    readOverlayMode = 'record';
+    readOverlayReturnFocusEl = null;
 
     const overlay = document.createElement('div');
     overlay.className = 'rlog-read-overlay';
@@ -5705,6 +7770,9 @@ function openReadFullOverlay(index) {
                 </button>
                 <button class="rlog-read-jump-bottom-btn" title="置底">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="4" x2="12" y2="15"></line><line x1="5" y1="20" x2="19" y2="20"></line></svg>
+                </button>
+                <button class="rlog-read-export-btn" title="导出当前内容">
+                    <i class="fa-solid fa-file-export"></i>
                 </button>
                 <button class="rlog-read-copy-btn" title="复制当前内容">
                     <i class="fa-solid fa-copy"></i>
@@ -5747,6 +7815,12 @@ function openReadFullOverlay(index) {
         await doCopy(text, copyBtn);
     });
 
+    const exportBtn = overlay.querySelector('.rlog-read-export-btn');
+    exportBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        exportReadContent(record, readFullFormat, exportBtn);
+    });
+
     const closeBtn = overlay.querySelector('.rlog-read-close-btn');
     closeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -5763,6 +7837,46 @@ function openReadFullOverlay(index) {
     }
 
     document.addEventListener('keydown', handleReadFullEscape);
+}
+
+/* 打开轻量单条消息阅读层：复用同一覆盖层状态与滚动条，但保留当前搜索状态且不显示标题栏 */
+function openMessageReadOverlay(recordIndex, msgIdx, triggerEl) {
+    const record = records[recordIndex];
+    const msg = getMessageByIndex(record, msgIdx);
+    if (!panelEl || !record || !msg) return;
+
+    closeReadFullOverlay({ restoreFocus: false });
+    readFullRecordIndex = recordIndex;
+    readOverlayMode = 'message';
+    readOverlayReturnFocusEl = triggerEl || null;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'rlog-read-overlay rlog-message-read-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', '查看消息');
+    overlay.innerHTML = `
+        <button class="rlog-message-read-close-btn" title="关闭 (Esc)" aria-label="关闭查看消息">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+        <div class="rlog-read-content"></div>
+        <div class="rlog-read-footer"></div>
+    `;
+
+    const contentEl = overlay.querySelector('.rlog-read-content');
+    contentEl.textContent = toRenderedText(getMessageDisplayText(msg));
+
+    const closeBtn = overlay.querySelector('.rlog-message-read-close-btn');
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeReadFullOverlay();
+    });
+
+    panelEl.appendChild(overlay);
+    readFullOverlayEl = overlay;
+    queueScrollbarsForEls([contentEl]);
+    document.addEventListener('keydown', handleReadFullEscape);
+    closeBtn.focus();
 }
 
 /* ── 自定义滚动条 ───────────────────────── */
@@ -6344,7 +8458,7 @@ function restoreBody(contentEl) {
         return false;
     }
     unloadedBodies.delete(contentEl);
-    contentEl.textContent = toRenderedText(msg.content);
+    contentEl.textContent = toRenderedText(getMessageDisplayText(msg));
     contentEl.style.height = '';
     delete contentEl.dataset.rlogUnloaded;
     if (state.scrollTop) contentEl.scrollTop = state.scrollTop;
@@ -6542,14 +8656,19 @@ function setBadgeActive(active) {
     badgeEl.style.display = active ? 'flex' : 'none';
 }
 
-/* 标题文字点击触发的「面板 ↔ 浮标」切换。
-   @param {MouseEvent} [ev] 点击事件（用于以点击坐标作为浮标中心；首次收起且无事件时居中兜底） */
-function togglePanelWindow(ev) {
+/* 最小化按钮触发的「面板 ↔ 浮标」切换；浮标恢复面板时也复用这里。 */
+function togglePanelWindow() {
     isPanelCollapsed = !isPanelCollapsed;
     if (isPanelCollapsed) {
-        /* 收起为浮标：会话内首次收起记下当次点击坐标作为浮标中心，再次收起复用记录的位置
-           （拖动后即为拖动后位置）；刷新后 badgePos 重置为 null，按首次收起处理 */
+        /* 收起为浮标：尚未建立位置时使用右上角默认位置；拖动后复用拖动位置，刷新后重置 */
         hidePinToast();
+        hideResponseMetaTip();
+        /* 收起为浮标与关闭面板一致：退出全局搜索会话 */
+        setGlobalSearchDrawerOpen(false);
+        /* 筛选抽屉属于面板内界面，面板消失时一并收起 */
+        closeFilterDrawer();
+        /* 三个抽屉共用同一位置，面板消失时「更多」也一并收起。 */
+        closeMoreDrawer();
         /* 与关闭面板一致：隐藏前清掉播放中的动画类（闪烁 / 主题切换），
           否则隐藏期间动画不推进，重新展开会从头补播一次 */
         clearPanelAnimations();
@@ -6558,15 +8677,9 @@ function togglePanelWindow(ev) {
         panelEl.classList.add('rlog-window-collapsed');
         panelEl.style.display = 'none';
         if (badgeEl) {
-            if (!badgePos) {
-                const size = getBadgeSize();
-                const cx = ev ? ev.clientX : window.innerWidth / 2;
-                const cy = ev ? ev.clientY : window.innerHeight / 2;
-                badgePos = clampBadgeToViewport(cx - size / 2, cy - size / 2);
-            } else {
-                /* 复用记录位置，并在当前视口/尺寸下 clamp（窗口缩小或断点切换后仍保证可见） */
-                badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
-            }
+            if (!badgePos) badgePos = getDefaultBadgePos();
+            /* 复用记录位置，并在当前视口/尺寸下 clamp（窗口缩小或断点切换后仍保证可见） */
+            else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
             badgeEl.style.left = badgePos.left + 'px';
             badgeEl.style.top = badgePos.top + 'px';
         }
@@ -6613,6 +8726,7 @@ function addMenuEntry() {
     toggleBtn.innerHTML = '<i class="fa-solid fa-clock-rotate-left"></i> 最近请求记录';
     toggleBtn.addEventListener('click', togglePanel);
     menu.appendChild(toggleBtn);
+    syncMenuEntryVisibility();
 
     /* 延迟重新 append，确保排在所有同步初始化的插件之后（appendChild 会移动已有节点） */
     setTimeout(() => {
@@ -6622,33 +8736,319 @@ function addMenuEntry() {
     }, MENU_REORDER_DELAY_MS);
 }
 
-/* 收起「更多」抽屉（供互斥、点击外部、引导使用） */
-function closeMoreDrawer() {
+/* 按偏好即时显示或隐藏扩展菜单入口；保留节点与事件，不触碰其他扩展菜单项。 */
+function syncMenuEntryVisibility() {
+    if (!toggleBtn) return;
+    toggleBtn.style.display = preferences.hideExtensionEntry ? 'none' : '';
+}
+
+/* 取插件原生 QR 按钮（集合只保留一个条目，标题用于与用户自己的 QR 区分）。 */
+function getQuickReplyEntryButtonEl() {
+    const set = window.quickReplyApi?.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
+    if (!set?.dom) return null;
+    return Array.from(set.dom.querySelectorAll('.qr--button'))
+        .find(button => button.title === QUICK_REPLY_ENTRY_LABEL && button.isConnected) ?? null;
+}
+
+/* 点击原生 QR 入口时，不能被本插件的「点击面板外关闭」提前截断。 */
+function isQuickReplyEntryTarget(target) {
+    const set = window.quickReplyApi?.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
+    return !!(set?.dom?.isConnected && target instanceof Node && set.dom.contains(target));
+}
+
+/* 只把名称和内容都符合约定的集合当作插件自己的数据，避免误删同名用户集合。 */
+function isQuickReplyEntrySetOwned(set) {
+    if (!set) return false;
+    if (set.qrList.length === 0) return true;
+    if (set.qrList.length !== 1) return false;
+    const item = set.qrList[0];
+    return item.label === QUICK_REPLY_ENTRY_LABEL
+        || item.message === `/${QUICK_REPLY_ENTRY_COMMAND}`;
+}
+
+/* 注册插件常驻 slash 命令；页面刷新后由本插件重新注册。 */
+async function ensureToggleCommand() {
+    if (toggleCommandReady) return;
+    const [{ SlashCommandParser }, { SlashCommand }] = await Promise.all([
+        import('/scripts/slash-commands/SlashCommandParser.js'),
+        import('/scripts/slash-commands/SlashCommand.js'),
+    ]);
+    const existing = SlashCommandParser.commands[QUICK_REPLY_ENTRY_COMMAND];
+    if (existing) {
+        if (existing.source !== PLUGIN_KEY) {
+            throw new Error(`Slash command conflict: ${QUICK_REPLY_ENTRY_COMMAND}`);
+        }
+        toggleCommandReady = true;
+        return;
+    }
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: QUICK_REPLY_ENTRY_COMMAND,
+        helpString: '切换最近请求记录面板；插件入口隐藏时也可用。',
+        returns: '空字符串',
+        callback: () => {
+            togglePanel();
+            return '';
+        },
+    }));
+    toggleCommandReady = true;
+}
+
+/* 清除插件集合在全局、聊天和角色配置中的活动引用。 */
+function removeQuickReplyEntryLinks(api, set) {
+    if (!api || !set) return;
+    const configs = [
+        api.settings.config,
+        api.settings.chatConfig,
+        api.settings.charConfig,
+    ].filter(Boolean);
+    configs.forEach((config) => {
+        if (config.hasSet(set)) config.removeSet(set);
+    });
+}
+
+/* 创建或修复插件专用集合；配置已正确时不重复写盘。 */
+async function ensureQuickReplyEntrySet(api) {
+    let set = api.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
+    if (!set) {
+        set = await api.createSet(QUICK_REPLY_ENTRY_SET_NAME, {
+            disableSend: false,
+            placeBeforeInput: false,
+            injectInput: false,
+        });
+    }
+
+    if (set.qrList.length > 1) {
+        throw new Error(`QR entry set contains unexpected items: ${QUICK_REPLY_ENTRY_SET_NAME}`);
+    }
+    let item = set.qrList[0];
+    if (item && item.label !== QUICK_REPLY_ENTRY_LABEL
+        && item.message !== `/${QUICK_REPLY_ENTRY_COMMAND}`) {
+        throw new Error(`QR entry set name conflict: ${QUICK_REPLY_ENTRY_SET_NAME}`);
+    }
+
+    if (set.disableSend || set.placeBeforeInput || set.injectInput) {
+        await api.updateSet(QUICK_REPLY_ENTRY_SET_NAME, {
+            disableSend: false,
+            placeBeforeInput: false,
+            injectInput: false,
+        });
+    }
+
+    if (!item) {
+        item = api.createQuickReply(QUICK_REPLY_ENTRY_SET_NAME, QUICK_REPLY_ENTRY_LABEL, {
+            icon: '',
+            showLabel: true,
+            message: `/${QUICK_REPLY_ENTRY_COMMAND}`,
+            title: QUICK_REPLY_ENTRY_LABEL,
+            isHidden: false,
+        });
+    } else if (item.label !== QUICK_REPLY_ENTRY_LABEL
+        || item.message !== `/${QUICK_REPLY_ENTRY_COMMAND}`
+        || item.title !== QUICK_REPLY_ENTRY_LABEL
+        || item.icon
+        || !item.showLabel
+        || item.isHidden
+        || item.executeOnStartup
+        || item.executeOnUser
+        || item.executeOnAi
+        || item.executeOnChatChange
+        || item.executeOnGroupMemberDraft
+        || item.executeOnNewChat
+        || item.executeBeforeGeneration
+        || item.automationId) {
+        item = api.updateQuickReply(QUICK_REPLY_ENTRY_SET_NAME, item.label, {
+            icon: '',
+            showLabel: true,
+            newLabel: QUICK_REPLY_ENTRY_LABEL,
+            message: `/${QUICK_REPLY_ENTRY_COMMAND}`,
+            title: QUICK_REPLY_ENTRY_LABEL,
+            isHidden: false,
+            executeOnStartup: false,
+            executeOnUser: false,
+            executeOnAi: false,
+            executeOnChatChange: false,
+            executeOnGroupMemberDraft: false,
+            executeOnNewChat: false,
+            executeBeforeGeneration: false,
+            automationId: '',
+        });
+    }
+
+    return set;
+}
+
+/* 插件集合只保留一个全局可见引用，避免与聊天/角色范围配置叠加出重复按钮。 */
+function ensureQuickReplyEntryLink(api, set) {
+    [api.settings.chatConfig, api.settings.charConfig]
+        .filter(Boolean)
+        .forEach((config) => {
+            if (config.hasSet(set)) config.removeSet(set);
+        });
+    const globalConfig = api.settings.config;
+    const link = globalConfig.setList.find(entry => entry.set === set);
+    if (!link) {
+        api.addGlobalSet(QUICK_REPLY_ENTRY_SET_NAME, true);
+    } else if (!link.isVisible) {
+        link.isVisible = true;
+        globalConfig.update();
+    }
+}
+
+/* 按偏好增删原生 QR 集合引用；渲染、合并、弹出与收纳全部交给 ST。 */
+async function reconcileQuickReplyEntry(enabled) {
+    const api = window.quickReplyApi;
+    if (!api?.settings) return;
+    const existingSet = api.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
+    if (!enabled) {
+        if (isQuickReplyEntrySetOwned(existingSet)) {
+            removeQuickReplyEntryLinks(api, existingSet);
+        } else if (existingSet) {
+            console.warn(`[${PLUGIN_KEY}] 跳过同名 QR 集合的移除`, QUICK_REPLY_ENTRY_SET_NAME);
+        }
+        return;
+    }
+    await ensureToggleCommand();
+    const set = await ensureQuickReplyEntrySet(api);
+    ensureQuickReplyEntryLink(api, set);
+}
+
+/* 串行应用 QR 入口状态，避免快速开关时异步创建与移除交错。 */
+function syncQuickReplyEntry() {
+    const enabled = preferences.quickReplyEntry;
+    quickReplyEntrySyncQueue = quickReplyEntrySyncQueue
+        .catch(() => null)
+        .then(() => reconcileQuickReplyEntry(enabled))
+        .catch((error) => {
+            console.warn(`[${PLUGIN_KEY}] QR 入口同步失败`, error);
+        });
+    return quickReplyEntrySyncQueue;
+}
+
+/* 清理插件专属 QR 集合及其所有活动引用；供卸载清理使用。 */
+async function removeQuickReplyEntrySet() {
+    const api = window.quickReplyApi;
+    const set = api?.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
+    if (!isQuickReplyEntrySetOwned(set)) return;
+    removeQuickReplyEntryLinks(api, set);
+    await api.deleteSet(QUICK_REPLY_ENTRY_SET_NAME);
+}
+
+/* 从一个已开抽屉切到另一个时，保持外侧帘幕完整；下一帧再撤标记，不额外延迟内容动画。 */
+function markHeaderDrawerSwap(targetDrawer) {
+    if (!panelEl || !targetDrawer) return;
+    const drawerSelectors = [
+        '#rlog-more-drawer',
+        '#rlog-filter-drawer',
+        '#rlog-global-search-drawer',
+    ];
+    const replacingOpenDrawer = drawerSelectors.some((selector) => {
+        const drawer = panelEl.querySelector(selector);
+        return drawer && drawer !== targetDrawer && drawer.classList.contains('expanded');
+    });
+    if (!replacingOpenDrawer) return;
+
+    if (headerDrawerSwapClearFrame) cancelAnimationFrame(headerDrawerSwapClearFrame);
+    panelEl.classList.add('rlog-drawer-switching');
+    headerDrawerSwapClearFrame = requestAnimationFrame(() => {
+        headerDrawerSwapClearFrame = 0;
+        if (panelEl) panelEl.classList.remove('rlog-drawer-switching');
+    });
+}
+
+/* 统一管理「更多」抽屉；打开时关闭另外两个抽屉，三者共用标题栏下方的一行。 */
+function setMoreDrawerOpen(open) {
     if (!panelEl) return;
+    const nextOpen = !!open;
     const drawer = panelEl.querySelector('#rlog-more-drawer');
     const btn = panelEl.querySelector('#rlog-more-btn');
-    if (drawer) drawer.classList.remove('expanded');
-    if (btn) btn.classList.remove('active-drawer-btn');
+    if (nextOpen) {
+        markHeaderDrawerSwap(drawer);
+        setGlobalSearchDrawerOpen(false);
+        setFilterDrawerOpen(false);
+    }
+    if (drawer) {
+        drawer.classList.toggle('expanded', nextOpen);
+        drawer.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
+        drawer.inert = !nextOpen;
+    }
+    if (btn) {
+        btn.classList.toggle('active-drawer-btn', nextOpen);
+        btn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+    }
 }
 
-/* 收起「筛选」抽屉（供互斥、点击外部、引导使用） */
-function closeFilterDrawer() {
+/* 收起「更多」抽屉（供开关、面板退出、引导使用） */
+function closeMoreDrawer() {
+    setMoreDrawerOpen(false);
+}
+
+/* 防误触层不在帘幕裁切范围内，按搜索控件的实时位置与宽度单独对齐。 */
+function syncGlobalSearchGuard() {
     if (!panelEl) return;
+    const drawer = panelEl.querySelector('#rlog-global-search-drawer');
+    const controls = panelEl.querySelector('.rlog-global-search-controls');
+    const guard = panelEl.querySelector('.rlog-global-search-guard');
+    if (!drawer || !controls || !guard) return;
+    const drawerRect = drawer.getBoundingClientRect();
+    const controlsRect = controls.getBoundingClientRect();
+    guard.style.width = `${controlsRect.width}px`;
+    guard.style.right = `${Math.max(0, drawerRect.right - controlsRect.right)}px`;
+    guard.style.top = `${Math.max(0, controlsRect.bottom - drawerRect.top)}px`;
+}
+
+/* 统一管理全局搜索抽屉的开合与会话状态（关闭面板时也复用这里） */
+function setGlobalSearchDrawerOpen(open) {
+    globalSearchOpen = !!open;
+    if (!panelEl) return;
+    const drawer = panelEl.querySelector('#rlog-global-search-drawer');
+    const btn = panelEl.querySelector('#rlog-global-search-btn');
+    /* 三个标题栏下方抽屉互斥；关闭全局搜索时保留当前筛选条件。 */
+    if (globalSearchOpen) {
+        markHeaderDrawerSwap(drawer);
+        setMoreDrawerOpen(false);
+        setFilterDrawerOpen(false);
+    }
+    if (drawer) {
+        drawer.classList.toggle('expanded', globalSearchOpen);
+        drawer.setAttribute('aria-hidden', globalSearchOpen ? 'false' : 'true');
+        drawer.inert = !globalSearchOpen;
+    }
+    if (!globalSearchOpen) {
+        resetGlobalSearch();
+        const activeEl = panelShadowRoot ? panelShadowRoot.activeElement : null;
+        if (drawer && activeEl && drawer.contains(activeEl) && activeEl.blur) activeEl.blur();
+    }
+    if (btn) {
+        btn.classList.toggle('active-drawer-btn', globalSearchOpen);
+        btn.setAttribute('aria-expanded', globalSearchOpen ? 'true' : 'false');
+    }
+    if (globalSearchOpen) syncGlobalSearchGuard();
+}
+
+/* 统一管理筛选抽屉的展开、按钮激活态与无障碍状态；打开时结束全局搜索并保留筛选条件。 */
+function setFilterDrawerOpen(open) {
+    if (!panelEl) return;
+    const nextOpen = !!open;
     const drawer = panelEl.querySelector('#rlog-filter-drawer');
     const btn = panelEl.querySelector('#rlog-filter-btn');
-    if (drawer) drawer.classList.remove('expanded');
-    if (btn) btn.classList.remove('active-drawer-btn');
+    if (nextOpen) {
+        markHeaderDrawerSwap(drawer);
+        setGlobalSearchDrawerOpen(false);
+        setMoreDrawerOpen(false);
+    }
+    if (!drawer) return;
+    drawer.classList.toggle('expanded', nextOpen);
+    drawer.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
+    drawer.inert = !nextOpen;
+    if (btn) {
+        btn.classList.toggle('active-drawer-btn', nextOpen);
+        btn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+    }
 }
 
-/* 抽屉切换时旧抽屉瞬时收起（跳过动画）：两个抽屉宽度叠加会先把整行撑宽再回落（左右弹跳），
-   让旧的直接消失、新的照常展开即可避免。做法：禁用过渡 → 移除展开类 → 强制回流 → 恢复过渡。 */
-function closeDrawerInstant(drawer, btn) {
-    if (!drawer) return;
-    drawer.style.transition = 'none';
-    drawer.classList.remove('expanded');
-    if (btn) btn.classList.remove('active-drawer-btn');
-    void drawer.offsetWidth; /* 强制回流：提交瞬时收起，恢复过渡后不会补播动画 */
-    drawer.style.transition = '';
+/* 收起「筛选」抽屉（供入口切换、面板退出、引导使用） */
+function closeFilterDrawer() {
+    setFilterDrawerOpen(false);
 }
 
 /* 定位本插件自身的 style.css 真实地址：优先用 ST 已注入的插件样式 <link>（id 形如 "<目录>-css"），
@@ -6694,7 +9094,7 @@ function buildSelfCssLink() {
 
 /* 影子内 FA 固壳：文档级 @font-face / .fa 规则进不了影子，这里在影子内补最小可用的一层。
    - @font-face 复用 ST 现有 fa-solid-900 字体文件（绝对地址，不下载不复制）
-   - 只写插件实际使用的 33 个图标的 ::before content；新增图标在 FA_SOLID_CONTENT 补一行 */
+   - 只写插件实际使用的 34 个图标的 ::before content；新增图标在 FA_SOLID_CONTENT 补一行 */
 function buildFaShimStyle() {
     const style = document.createElement('style');
     const faWoff2 = new URL('webfonts/fa-solid-900.woff2', location.href).href;
@@ -6723,6 +9123,8 @@ function buildMinimalShimStyle() {
     const rules = [
         ':host(.rlog-minimal){transition:none!important;animation:none!important}',
         ':host(.rlog-minimal) *,:host(.rlog-minimal) *::before,:host(.rlog-minimal) *::after{transition:none!important;animation:none!important}',
+        ':host(.rlog-minimal) .rlog-global-search-update-border-glow{display:none!important}',
+        ':host(.rlog-minimal) .rlog-total-tokens .rlog-token-warning{animation:rlog-token-warning 1.6s linear infinite!important}',
         ':host(.rlog-minimal) .rlog-pref-overlay{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}',
         ':host(.rlog-minimal) .rlog-tour-highlight::before,:host(.rlog-minimal) .rlog-tour-highlight::after{transition:none!important;animation:none!important}',
         ':host(.rlog-minimal) .rlog-tour-highlight{transition:all .3s cubic-bezier(.4,0,.2,1)!important;animation:none!important}',
@@ -6737,16 +9139,13 @@ function buildUI() {
     if (uiBuilt) return;
     uiBuilt = true;
 
+    /* 加载 ST 扩展设置（首次升级时在这里完成旧浏览器配置迁移与清理） */
+    loadPluginSettings();
+    /* 菜单入口需要先读取「隐藏扩展程序入口」偏好，避免首次渲染时短暂闪现 */
     addMenuEntry();
-
-    /* 加载持久化设置 */
     isLightTheme = loadTheme();
     MAX_RECORDS = loadMaxRecords();
-    try {
-        masterEnabled = localStorage.getItem(STORAGE_MASTER_KEY) !== '0';
-    } catch (e) {
-        masterEnabled = true;
-    }
+    masterEnabled = pluginSettings ? pluginSettings.masterEnabled : true;
 
     panelEl = document.createElement('div');
     panelEl.id = 'rlog-panel';
@@ -6757,36 +9156,72 @@ function buildUI() {
     panelEl.innerHTML = `
         <div class="rlog-panel-header">
             <h4>
-                <span class="rlog-title-text" title="单击折叠/展开">最近请求记录</span>
-                <span class="rlog-title-count" title="双击修改记录上限">${getHeaderCountText()}</span>
+                <span class="rlog-title-text">最近请求记录</span>
+                <span class="rlog-title-count" title="当前记录数 / 普通记录上限">${getHeaderCountText()}</span>
                 <span class="rlog-filter-indicator" id="rlog-filter-indicator" hidden>
                     <span id="rlog-filter-indicator-text"></span>
                     <button id="rlog-filter-reset-btn" title="重置筛选" aria-label="重置筛选"><i class="fa-solid fa-rotate-left"></i></button>
                 </span>
             </h4>
-            <div class="rlog-header-drag-space" style="flex: 1; height: 28px; cursor: move; margin: 0 10px;"></div>
+            <div class="rlog-header-drag-space" style="flex: 1; height: 28px; margin: 0 10px;"></div>
             <div class="rlog-header-actions">
-                <div class="rlog-more-drawer" id="rlog-more-drawer">
+                <span class="rlog-ui-divider" aria-hidden="true"></span>
+                <button id="rlog-filter-btn" class="rlog-header-btn" title="筛选记录"
+                        aria-controls="rlog-filter-drawer" aria-expanded="false">
+                    <i class="fa-solid fa-filter"></i>
+                    <span class="rlog-filter-dot"></span>
+                </button>
+                <button id="rlog-global-search-btn" class="rlog-header-btn" title="搜索所有记录"
+                        aria-controls="rlog-global-search-drawer" aria-expanded="false">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
+                <button id="rlog-more-btn" class="rlog-header-btn" title="更多选项"
+                        aria-controls="rlog-more-drawer" aria-expanded="false">
+                    <i class="fa-solid fa-ellipsis"></i>
+                </button>
+                <span class="rlog-ui-divider" aria-hidden="true"></span>
+                <button id="rlog-minimize-btn" class="rlog-header-btn" title="最小化"
+                        aria-label="最小化">
+                    <i class="fa-solid fa-minus"></i>
+                </button>
+                <button id="rlog-fullscreen-btn" class="rlog-header-btn" title="最大化">
+                    <i class="fa-solid fa-window-maximize"></i>
+                </button>
+                <button id="rlog-close-btn" class="rlog-close-btn" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </div>
+        <div class="rlog-more-drawer" id="rlog-more-drawer" aria-hidden="true" inert>
+            <div class="rlog-drawer-surface">
+                <div class="rlog-more-controls" role="group" aria-label="更多选项">
                     <button id="rlog-master-toggle" class="rlog-header-btn rlog-master-on" title="总开关：已启用 — 点击关闭">
                         <i class="fa-solid fa-power-off"></i>
                     </button>
                     <button id="rlog-help-btn" class="rlog-header-btn" title="查看使用引导">
                         <i class="fa-solid fa-question"></i>
                     </button>
+                    <span class="rlog-ui-divider" aria-hidden="true"></span>
                     <button id="rlog-pref-btn" class="rlog-header-btn" title="偏好设置">
                         <i class="fa-solid fa-heart"></i>
                     </button>
                     <button id="rlog-preview-btn" class="rlog-header-btn" title="内容预览-已关闭">
                         <i class="fa-solid fa-eye-slash"></i>
                     </button>
-                    <button id="rlog-clear-btn" class="rlog-header-btn" title="清空所有记录">
-                        <i class="fa-solid fa-trash-can"></i>
-                    </button>
                     <button id="rlog-theme-btn" class="rlog-header-btn" title="切换昼/夜模式">
                         <i class="fa-solid fa-sun"></i>
                     </button>
+                    <span class="rlog-ui-divider" aria-hidden="true"></span>
+                    <button id="rlog-collapse-all-btn" class="rlog-header-btn" title="折叠所有条目">
+                        <i class="fa-solid fa-minimize"></i>
+                    </button>
+                    <button id="rlog-clear-btn" class="rlog-header-btn" title="清空所有记录">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
                 </div>
-                <div class="rlog-filter-drawer" id="rlog-filter-drawer">
+            </div>
+        </div>
+        <div class="rlog-filter-drawer" id="rlog-filter-drawer" aria-hidden="true" inert>
+            <div class="rlog-drawer-surface">
+                <div class="rlog-filter-controls" role="group" aria-label="筛选记录">
                     <span class="rlog-filter-group">
                         <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="source" data-filter-value="native" title="原生请求"><i class="fa-solid fa-paper-plane"></i></button>
                         <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="source" data-filter-value="plugin" title="插件/非原生请求"><i class="fa-solid fa-puzzle-piece"></i></button>
@@ -6803,22 +9238,54 @@ function buildUI() {
                         <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="user" title="User"><i class="fa-solid fa-user"></i></button>
                         <button class="rlog-filter-chip rlog-filter-chip-on" data-filter-group="role" data-filter-value="other" title="其他"><i class="fa-solid fa-list"></i></button>
                     </span>
+                    <button id="rlog-filter-drawer-reset-btn" class="rlog-search-text-btn"
+                            type="button" title="重置筛选" aria-label="重置筛选">重置</button>
                 </div>
-                <button id="rlog-more-btn" class="rlog-header-btn" title="更多选项">
-                    <i class="fa-solid fa-ellipsis"></i>
-                </button>
-                <button id="rlog-filter-btn" class="rlog-header-btn" title="筛选记录">
-                    <i class="fa-solid fa-filter"></i>
-                    <span class="rlog-filter-dot"></span>
-                </button>
-                <button id="rlog-global-search-btn" class="rlog-header-btn" title="搜索所有记录（占位）">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                </button>
-                <button id="rlog-collapse-all-btn" class="rlog-header-btn" title="折叠所有条目">
-                    <i class="fa-solid fa-compress-alt"></i>
-                </button>
-                <button id="rlog-close-btn" class="rlog-close-btn" title="关闭面板"><i class="fa-solid fa-xmark"></i></button>
             </div>
+        </div>
+        <div class="rlog-global-search-drawer" id="rlog-global-search-drawer" aria-hidden="true" inert>
+            <div class="rlog-drawer-surface">
+                <div class="rlog-global-search-controls" role="search" aria-label="搜索所有记录">
+                    <div class="rlog-global-search-input-wrap">
+                        <input id="rlog-global-search-input" class="rlog-global-search-input" type="text"
+                               placeholder="搜索所有记录..." aria-label="搜索所有记录"
+                               autocomplete="off" spellcheck="false">
+                        <span class="rlog-global-search-count" role="group" aria-label="全局搜索结果序号">0/0</span>
+                    </div>
+                    <button id="rlog-global-search-submit" type="button" class="rlog-search-text-btn"
+                            title="搜索">
+                        <svg class="rlog-global-search-update-border" viewBox="0 0 30 20"
+                             aria-hidden="true" focusable="false">
+                            <defs>
+                                <mask id="rlog-global-search-update-border-mask"
+                                      maskUnits="userSpaceOnUse" x="0" y="0" width="30" height="20">
+                                    <rect x="0.5" y="0.5" width="29" height="19" rx="3.5" ry="3.5"
+                                          class="rlog-global-search-update-border-mask-shape"
+                                          fill="none" stroke-width="1"></rect>
+                                </mask>
+                            </defs>
+                            <rect class="rlog-global-search-update-border-base"
+                                  x="0.5" y="0.5" width="29" height="19" rx="3.5" ry="3.5" pathLength="100"></rect>
+                            <foreignObject class="rlog-global-search-update-border-paint"
+                                          x="0" y="0" width="30" height="20"
+                                          mask="url(#rlog-global-search-update-border-mask)">
+                                <div xmlns="http://www.w3.org/1999/xhtml"
+                                     class="rlog-global-search-update-border-glow"></div>
+                            </foreignObject>
+                        </svg>
+                        <span class="rlog-global-search-submit-label">搜索</span>
+                    </button>
+                    <button id="rlog-global-search-reset" type="button" class="rlog-search-text-btn"
+                            title="重置">重置</button>
+                    <button class="rlog-global-search-next" type="button" title="下一个" disabled>
+                        <i class="fa-solid fa-arrow-down"></i>
+                    </button>
+                    <button class="rlog-global-search-prev" type="button" title="上一个" disabled>
+                        <i class="fa-solid fa-arrow-up"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="rlog-global-search-guard" aria-hidden="true"></div>
         </div>
         <div class="rlog-panel-body">
             <div id="rlog-list" class="rlog-list">
@@ -6827,6 +9294,7 @@ function buildUI() {
             <div class="rlog-resize-grip" title="拖动调整窗口大小"></div>
         </div>
         <div id="rlog-pin-toast" class="rlog-pin-toast" aria-live="polite"></div>
+        <div id="rlog-response-meta-tip" class="rlog-response-meta-tip" popover="auto"></div>
         <div class="rlog-pref-overlay" id="rlog-pref-overlay">
             <div class="rlog-pref-panel">
                 <div class="rlog-pref-header">
@@ -6842,12 +9310,54 @@ function buildUI() {
                     <div class="rlog-pref-list">
                         <div class="rlog-pref-item">
                             <div class="rlog-pref-item-text">
+                                <span class="rlog-pref-label">记录上限</span>
+                                <div class="rlog-pref-item-desc">范围 10～100，默认 10</div>
+                            </div>
+                            <input id="rlog-max-records-input" class="rlog-pref-number-input"
+                                   type="text" inputmode="numeric" pattern="[0-9]*"
+                                   autocomplete="off" spellcheck="false"
+                                   value="${MAX_RECORDS}" aria-label="记录上限">
+                        </div>
+                        <div class="rlog-pref-item">
+                            <div class="rlog-pref-item-text">
+                                <span class="rlog-pref-label">等待响应超时（秒）</span>
+                                <div class="rlog-pref-item-desc">仅影响插件记录，不会中断实际请求<br>范围 0～3600，默认 300，0 = 不限制</div>
+                            </div>
+                            <input id="rlog-reply-timeout-input" class="rlog-pref-number-input"
+                                   type="text" inputmode="numeric" pattern="[0-9]*"
+                                   autocomplete="off" spellcheck="false"
+                                   value="${replyTimeoutSec}" aria-label="等待响应超时（秒）">
+                        </div>
+                        <div class="rlog-pref-item">
+                            <div class="rlog-pref-item-text">
+                                <span class="rlog-pref-label">闪烁提醒阈值</span>
+                                <div class="rlog-pref-item-desc">达到指定 token 数时，标红并闪烁<br>范围 0～1M，0 = 关闭闪烁</div>
+                            </div>
+                            <input id="rlog-token-warning-input" class="rlog-pref-number-input"
+                                   type="text" inputmode="numeric" pattern="[0-9]*"
+                                   autocomplete="off" spellcheck="false"
+                                   value="${tokenWarningThreshold}" aria-label="闪烁提醒阈值">
+                        </div>
+                        <div class="rlog-pref-item rlog-pref-item-divided">
+                            <div class="rlog-pref-item-text">
                                 <span class="rlog-pref-label">浮标作为默认入口</span>
                                 <div class="rlog-pref-item-desc">开启后，插件启动默认显示浮标<br>否则仅最小化时出现浮标</div>
                             </div>
-                            <button class="rlog-toggle" data-pref-key="badgeDefault" role="switch" aria-checked="false" aria-label="浮标默认入口"></button>
+                            <button class="rlog-toggle" data-pref-key="badgeDefault" role="switch" aria-checked="false" aria-label="浮标作为默认入口"></button>
                         </div>
                         <div class="rlog-pref-item">
+                            <div class="rlog-pref-item-text">
+                                <span class="rlog-pref-label">显示 QR 按钮作为入口</span>
+                            </div>
+                            <button class="rlog-toggle" data-pref-key="quickReplyEntry" role="switch" aria-checked="false" aria-label="显示 QR 按钮作为入口"></button>
+                        </div>
+                        <div class="rlog-pref-item">
+                            <div class="rlog-pref-item-text">
+                                <span class="rlog-pref-label">隐藏扩展程序（魔法棒）入口</span>
+                            </div>
+                            <button class="rlog-toggle" data-pref-key="hideExtensionEntry" role="switch" aria-checked="false" aria-label="隐藏扩展程序（魔法棒）入口"></button>
+                        </div>
+                        <div class="rlog-pref-item rlog-pref-item-divided">
                             <div class="rlog-pref-item-text">
                                 <span class="rlog-pref-label">昼夜模式跟随 ST 主题</span>
                                 <div class="rlog-pref-item-desc">开启后，昼夜模式自动跟随亮暗主题切换<br>此模式下手动切换按钮不生效</div>
@@ -6859,7 +9369,7 @@ function buildUI() {
                                 <span class="rlog-pref-label">移动端默认全屏</span>
                                 <div class="rlog-pref-item-desc">阅读区域最大化，覆盖下一项设置<br>因为没有面板外区域了</div>
                             </div>
-                            <button class="rlog-toggle" data-pref-key="mobileFull" role="switch" aria-checked="false" aria-label="移动端全屏"></button>
+                            <button class="rlog-toggle" data-pref-key="mobileFull" role="switch" aria-checked="false" aria-label="移动端默认全屏"></button>
                         </div>
                         <div class="rlog-pref-item">
                             <div class="rlog-pref-item-text">
@@ -6939,72 +9449,38 @@ function buildUI() {
     /* host 就绪后重放主题类（供面板/弹窗用；浮标配色由上面单独跟随 ST 主题） */
     applyTheme();
 
-    /* H4 标题文字拆分：文字部分单击折叠/展开，数字部分双击设置最大记录数 */
-    {
-        const textEl = panelEl.querySelector('.rlog-title-text');
-        const countEl = panelEl.querySelector('.rlog-title-count');
-        /* number|null: 用于延迟判断双单击的定时器 ID（仅数字部分使用） */
-        let countClickTimer = null;
-
-        /* 文字部分：单击立即折叠/展开窗口（无延迟） */
-        textEl.addEventListener('click', (e) => {
-            e.stopPropagation();
-            /* 引导期间不收起：浮标会让引导高亮目标（面板内元素）消失，破坏引导 */
-            if (tourActive) return;
-            togglePanelWindow(e);
-        });
-
-        /* 数字部分：双击弹出设置对话框（单击无反应） */
-        countEl.addEventListener('click', (e) => {
-            e.stopPropagation();
-
-            if (countClickTimer) {
-                clearTimeout(countClickTimer);
-                countClickTimer = null;
-                showMaxRecordsDialog();
-                return;
-            }
-
-            countClickTimer = setTimeout(() => {
-                countClickTimer = null;
-            }, DOUBLE_CLICK_THRESHOLD);
-        });
-    }
-
     const moreBtn = panelEl.querySelector('#rlog-more-btn');
     const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
     const filterBtn = panelEl.querySelector('#rlog-filter-btn');
     const filterDrawer = panelEl.querySelector('#rlog-filter-drawer');
+    const globalSearchGuardDrawer = panelEl.querySelector('#rlog-global-search-drawer');
+    const globalSearchGuardControls = panelEl.querySelector('.rlog-global-search-controls');
+    if (globalSearchGuardControls && globalSearchGuardDrawer && typeof ResizeObserver === 'function') {
+        globalSearchGuardObserver?.disconnect();
+        globalSearchGuardObserver = new ResizeObserver(syncGlobalSearchGuard);
+        globalSearchGuardObserver.observe(globalSearchGuardControls);
+        globalSearchGuardObserver.observe(globalSearchGuardDrawer);
+    }
+    syncGlobalSearchGuard();
 
     moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (filterDrawer.classList.contains('expanded')) {
-            /* 切换抽屉：旧抽屉瞬时收起（跳过过渡），新抽屉正常展开，避免两抽屉宽度叠加弹跳 */
-            closeDrawerInstant(filterDrawer, filterBtn);
-        } else {
-            closeFilterDrawer();
-        }
-        moreDrawer.classList.toggle('expanded');
-        if (moreDrawer.classList.contains('expanded')) {
-            moreBtn.classList.add('active-drawer-btn');
-        } else {
-            moreBtn.classList.remove('active-drawer-btn');
-        }
+        setMoreDrawerOpen(!moreDrawer.classList.contains('expanded'));
+        /* 抽屉开合会改变列表可用高度：只排一次现有的正文带宽维护。 */
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
+    });
+
+    moreDrawer.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        closeMoreDrawer();
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
     });
 
     filterBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (moreDrawer.classList.contains('expanded')) {
-            closeDrawerInstant(moreDrawer, moreBtn);
-        } else {
-            closeMoreDrawer();
-        }
-        filterDrawer.classList.toggle('expanded');
-        if (filterDrawer.classList.contains('expanded')) {
-            filterBtn.classList.add('active-drawer-btn');
-        } else {
-            filterBtn.classList.remove('active-drawer-btn');
-        }
+        setFilterDrawerOpen(!filterDrawer.classList.contains('expanded'));
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
     });
 
     filterDrawer.querySelectorAll('.rlog-filter-chip').forEach((chip) => {
@@ -7012,6 +9488,39 @@ function buildUI() {
             e.stopPropagation();
             toggleFilterChip(chip.dataset.filterGroup, chip.dataset.filterValue);
         });
+    });
+
+    const filterDrawerResetBtn = panelEl.querySelector('#rlog-filter-drawer-reset-btn');
+    if (filterDrawerResetBtn) {
+        filterDrawerResetBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            resetFilters();
+        });
+    }
+
+    /* 极窄面板下控件可横向滚动：移动端直接滑动，桌面普通鼠标滚轮转为横向滚动。 */
+    const filterControls = filterDrawer.querySelector('.rlog-filter-controls');
+    if (filterControls) {
+        filterControls.addEventListener('wheel', (e) => {
+            const maxScroll = filterControls.scrollWidth - filterControls.clientWidth;
+            if (maxScroll <= 0 || e.deltaY === 0) return;
+            const before = filterControls.scrollLeft;
+            filterControls.scrollLeft = Math.max(0, Math.min(
+                maxScroll,
+                before + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY),
+            ));
+            if (filterControls.scrollLeft !== before) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, { passive: false });
+    }
+
+    filterDrawer.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        closeFilterDrawer();
+        scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
     });
 
     const filterResetBtn = panelEl.querySelector('#rlog-filter-reset-btn');
@@ -7022,32 +9531,91 @@ function buildUI() {
         });
     }
 
-    /* 全局搜索目前只有入口占位：点击给一条轻量提示（功能正式实现时替换本段） */
+    /* 全局搜索入口负责抽屉开合，并与单条记录搜索互斥 */
     const globalSearchBtn = panelEl.querySelector('#rlog-global-search-btn');
     if (globalSearchBtn) {
         globalSearchBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            showPinToast('全局搜索请等待后续更新');
+            const willOpen = !globalSearchOpen;
+            if (willOpen) resetSearchIfActive();
+            setGlobalSearchDrawerOpen(willOpen);
+            /* 抽屉开合会改变列表可用高度：只排一次现有的正文带宽维护 */
+            scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
+        });
+    }
+    installSearchCountEditDismissal(panelEl);
+    const globalSearchCounter = panelEl.querySelector('.rlog-global-search-count');
+    bindSearchCountJump(globalSearchCounter, {
+        getCurrent: () => globalSearchState && globalSearchState.currentIdx >= 0
+            ? globalSearchState.currentIdx + 1
+            : 0,
+        getTotal: () => globalSearchState ? globalSearchState.matches.length : 0,
+        prepareCommit: () => reconcileGlobalSearchResults(false, false),
+        onJump: (targetIdx) => {
+            const match = globalSearchState ? globalSearchState.matches[targetIdx] : null;
+            if (match) applyGlobalCurrentMatch(targetIdx);
+        },
+    });
+    updateGlobalSearchControls();
+
+    /* 全局搜索：输入只更新按钮状态，搜索只在点击或 Enter 时执行。 */
+    const globalSearchInput = panelEl.querySelector('#rlog-global-search-input');
+    if (globalSearchInput) {
+        /* 中文输入法组合期间不处理回车，避免选字时误触发搜索。 */
+        let isComposing = false;
+        globalSearchInput.addEventListener('compositionstart', () => { isComposing = true; });
+        globalSearchInput.addEventListener('compositionend', () => { isComposing = false; });
+        globalSearchInput.addEventListener('input', updateGlobalSearchSubmitState);
+        globalSearchInput.addEventListener('keydown', (e) => {
+            if (isComposing || e.isComposing || e.keyCode === 229) return;
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            const needsSearch = !globalSearchState
+                || globalSearchInput.value !== globalSearchState.keyword
+                || globalSearchState.hasNewData;
+            if (needsSearch) {
+                performGlobalSearch();
+            } else {
+                navigateGlobalSearch(e.shiftKey ? -1 : 1);
+            }
+        });
+    }
+    const globalSearchDrawer = panelEl.querySelector('#rlog-global-search-drawer');
+    if (globalSearchDrawer) {
+        globalSearchDrawer.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            setGlobalSearchDrawerOpen(false);
+            scheduleBodyBandPass(panelEl.querySelector('#rlog-list'));
         });
     }
 
-    /* 全局点击监听：点击外部收起任一展开的抽屉（「更多」「筛选」互斥） */
-    if (!document.rlogHeaderDrawerListenerInstalled) {
-        document.rlogHeaderDrawerListenerInstalled = true;
-        document.addEventListener('click', (e) => {
-            if (panelEl && isPanelVisible) {
-                const drawerPairs = [
-                    { drawer: panelEl.querySelector('#rlog-more-drawer'), btn: panelEl.querySelector('#rlog-more-btn') },
-                    { drawer: panelEl.querySelector('#rlog-filter-drawer'), btn: panelEl.querySelector('#rlog-filter-btn') },
-                ];
-                drawerPairs.forEach(({ drawer, btn }) => {
-                    if (drawer && drawer.classList.contains('expanded')
-                        && !drawer.contains(e.target) && !btn.contains(e.target)) {
-                        drawer.classList.remove('expanded');
-                        btn.classList.remove('active-drawer-btn');
-                    }
-                });
-            }
+    const globalSearchSubmit = panelEl.querySelector('#rlog-global-search-submit');
+    if (globalSearchSubmit) {
+        globalSearchSubmit.addEventListener('click', (e) => {
+            e.stopPropagation();
+            performGlobalSearch();
+        });
+    }
+    const globalSearchReset = panelEl.querySelector('#rlog-global-search-reset');
+    if (globalSearchReset) {
+        globalSearchReset.addEventListener('click', (e) => {
+            e.stopPropagation();
+            resetGlobalSearch();
+        });
+    }
+    const globalSearchNext = panelEl.querySelector('.rlog-global-search-next');
+    if (globalSearchNext) {
+        globalSearchNext.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigateGlobalSearch(1);
+        });
+    }
+    const globalSearchPrev = panelEl.querySelector('.rlog-global-search-prev');
+    if (globalSearchPrev) {
+        globalSearchPrev.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigateGlobalSearch(-1);
         });
     }
 
@@ -7062,6 +9630,7 @@ function buildUI() {
             /* 浮标态：点面板外不清除浮标（它是用户主动收起产生的入口），点击浮标本身由浮标自己处理 */
             if (isPanelCollapsed) return;
             if (toggleBtn && toggleBtn.contains(e.target)) return;
+            if (isQuickReplyEntryTarget(e.target)) return;
             const insidePanel = e.target === shadowHostEl || e.composedPath().includes(panelEl);
             if (insidePanel) return;
             hidePanel();
@@ -7069,6 +9638,18 @@ function buildUI() {
     }
 
     panelEl.querySelector('#rlog-close-btn').addEventListener('click', hidePanel);
+
+    panelEl.querySelector('#rlog-minimize-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        /* 引导期间不收起：浮标会让引导高亮目标（面板内元素）消失，破坏引导 */
+        if (tourActive) return;
+        togglePanelWindow();
+    });
+
+    panelEl.querySelector('#rlog-fullscreen-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFullscreen();
+    });
 
     panelEl.querySelector('#rlog-collapse-all-btn').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -7108,7 +9689,8 @@ function buildUI() {
     panelEl.querySelector('#rlog-help-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         if (window.__RLogTour && typeof window.__RLogTour.start === 'function') {
-            /* 确保面板展开并且两个抽屉都收起 */
+            /* 确保面板展开并且三个共用位置的抽屉都收起 */
+            setGlobalSearchDrawerOpen(false);
             closeMoreDrawer();
             closeFilterDrawer();
             
@@ -7155,6 +9737,28 @@ function buildUI() {
             });
         });
 
+        bindPrefIntegerInput(prefOverlayEl.querySelector('#rlog-max-records-input'), {
+            min: MIN_MAX_RECORDS,
+            max: MAX_MAX_RECORDS,
+            getCurrent: () => MAX_RECORDS,
+            unit: ' 条',
+            invalidText: '记录上限只能是 10～100 的整数',
+        });
+        bindPrefIntegerInput(prefOverlayEl.querySelector('#rlog-reply-timeout-input'), {
+            min: MIN_REPLY_TIMEOUT_SEC,
+            max: MAX_REPLY_TIMEOUT_SEC,
+            getCurrent: () => replyTimeoutSec,
+            unit: ' 秒',
+            invalidText: '只能输入 0～3600 的整数秒',
+        });
+        bindPrefIntegerInput(prefOverlayEl.querySelector('#rlog-token-warning-input'), {
+            min: MIN_TOKEN_WARNING_THRESHOLD,
+            max: MAX_TOKEN_WARNING_THRESHOLD,
+            getCurrent: () => tokenWarningThreshold,
+            unit: ' tokens',
+            invalidText: '闪烁提醒阈值只能是 0～1000000 的整数',
+        });
+
         const prefListEl = prefOverlayEl.querySelector('.rlog-pref-list');
         if (prefListEl) {
             prefListEl.addEventListener('scroll', () => updatePrefScrollArrows(), { passive: true });
@@ -7165,10 +9769,23 @@ function buildUI() {
 
     /* 加载持久化偏好并同步入口图标 + 开关视觉 */
     loadPreferences();
+    syncMenuEntryVisibility();
     updatePrefButtonIcon();
     syncPrefToggleUI();
-    /* 移动端全屏：按偏好 + 当前视口设置全屏类（面板此刻 display:none，样式待展示时生效） */
-    updateMobileFullscreenClass();
+    syncMaxRecordsInputUI();
+    syncReplyTimeoutInputUI();
+    syncTokenWarningThresholdInputUI();
+    /* QR 入口：偏好开启时接入插件专用原生 QR 集合，渲染与收纳交给 ST */
+    syncQuickReplyEntry();
+    /* 常驻兜底命令：不依赖 QR 或菜单入口是否开启 */
+    ensureToggleCommand().catch((error) => {
+        console.warn(`[${PLUGIN_KEY}] 注册 rlog-toggle 命令失败`, error);
+    });
+    /* 移动端布局高度与全屏状态同在 UI 初始化时确定；键盘后续只影响遮挡，不重算布局 */
+    syncMobilePanelLayoutMetrics(true);
+    /* 全屏默认状态只在此处按偏好 + 当前视口冻结一次；之后只受用户手动状态覆盖 */
+    initFullscreenState();
+    syncFullscreenUI();
     /* 极简模式：按偏好给影子宿主加/去类（触发 :host 极简规则） */
     updateMinimalClass();
     /* 「昼夜模式跟随 ST 主题」：开启时静默同步到 ST 当前主题并挂上主题变化监听（此刻不播动画） */
@@ -7224,11 +9841,15 @@ function buildUI() {
     makeDraggable(panelEl);
     makeResizable(panelEl);
 
-    /* 视口/面板宽度变化（含桌面↔移动切换、拖拽改宽）会让记录标题栏换行高度变化，需重测吸顶偏移；
-       连续 resize 由 scheduleViewportSync 合并到下一帧，一帧最多重测一次 */
+    /* 移动端宽度变化重算布局，单纯高度变化只处理键盘遮挡；桌面端保持原 resize 行为。
+       连续 resize 由各自入口合并到下一帧，一帧最多执行一次。 */
     if (!window.rlogHeaderVarResizeInstalled) {
         window.rlogHeaderVarResizeInstalled = true;
-        window.addEventListener('resize', scheduleViewportSync);
+        window.addEventListener('resize', handleViewportResize);
+    }
+    if (window.visualViewport && !window.rlogVisualViewportResizeInstalled) {
+        window.rlogVisualViewportResizeInstalled = true;
+        window.visualViewport.addEventListener('resize', scheduleActiveListControlVisibility);
     }
 
     /* 安装来源识别监听（仅记录用户原生入口，不受总开关影响） */
@@ -7255,6 +9876,16 @@ function buildUI() {
             hidePinToast();
         });
     }
+
+    /* Response 指标说明：Popover 被轻关（点别处 / Esc）后复位锚点；
+       捕获阶段监听面板内所有滚动（列表、正文内嵌滚动等），避免浮层停在旧位置 */
+    responseMetaTipEl = panelEl.querySelector('#rlog-response-meta-tip');
+    if (responseMetaTipEl) {
+        responseMetaTipEl.addEventListener('toggle', (event) => {
+            if (event.newState === 'closed') clearResponseMetaTipAnchor();
+        });
+    }
+    panelEl.addEventListener('scroll', hideResponseMetaTip, { capture: true, passive: true });
 
     renderPanelContent();
 }
@@ -7328,8 +9959,8 @@ function showPanel() {
     if (preferences.badgeDefault) resetPanelToDefault();
     panelEl.style.display = 'flex';
     isPanelVisible = true;
-    /* 移动端全屏：偏好开启 + 移动端视口才生效 */
-    updateMobileFullscreenClass();
+    /* 打开面板只同步当前全屏状态，不重新计算默认值 */
+    syncFullscreenUI();
     if (toggleBtn) toggleBtn.classList.add('active');
     /* 仅当数据/渲染设置变化时才重建 DOM；否则保留原有 DOM，避免大量展开消息时打开面板卡顿 */
     if (panelContentDirty) {
@@ -7364,10 +9995,18 @@ function showPanel() {
 function hidePanel() {
     /* 关闭面板时退出搜索模式 */
     resetSearchIfActive();
+    /* 所有关闭面板入口（关闭按钮、菜单 / QR 切换、面板外点击等）统一退出全局搜索 */
+    setGlobalSearchDrawerOpen(false);
+    /* 筛选抽屉随面板一起收起；已选筛选条件保持不变 */
+    closeFilterDrawer();
+    /* 「更多」抽屉与其他两个共用一行，面板关闭时不残留。 */
+    closeMoreDrawer();
     /* 关闭面板时隐藏置顶/取消置顶 toast */
     hidePinToast();
+    /* 关闭面板时收起 Response 指标说明，避免顶部层级浮层残留 */
+    hideResponseMetaTip();
     /* 关闭面板时隐式清理「查看全文」覆盖层（如存在） */
-    closeReadFullOverlay();
+    closeReadFullOverlay({ restoreFocus: false });
     /* 关闭面板时同时收起「偏好设置」浮层，避免浮层开着时关面板、重开仍残留打开态 */
     closePrefPanel();
     /* 关闭前趁布局仍然有效，把视口外的正文一次性卸载（实测约 3ms）：
@@ -7406,6 +10045,7 @@ function makeResizable(el) {
     grip.addEventListener('mousedown', (e) => {
         e.stopPropagation();
         e.preventDefault();
+        if (isFullscreenActive()) return;
         panelResizing = true;
         resizeStartX = e.clientX;
         resizeStartY = e.clientY;
@@ -7423,6 +10063,7 @@ function makeResizable(el) {
     grip.addEventListener('touchstart', (e) => {
         e.stopPropagation();
         e.preventDefault();
+        if (isFullscreenActive()) return;
         panelResizing = true;
         resizeStartX = e.touches[0].clientX;
         resizeStartY = e.touches[0].clientY;
@@ -7570,77 +10211,81 @@ function makeDraggable(el) {
     if (!header) return;
 
     let startX, startY, origX, origY;
+    let dragPending = false;
     let dragging = false;
 
-    header.style.cursor = 'move';
+    /* 交互控件及其子元素不参与标题栏拖动 */
+    function isDragBlocked(target) {
+        return target instanceof Element
+            && !!target.closest(PANEL_HEADER_DRAG_BLOCK_SELECTOR);
+    }
 
-    header.addEventListener('mousedown', (e) => {
-        /* 跳过按钮、H4 标题及其子元素、预览开关（它们有各自的交互，不参与拖拽） */
-        if (e.target.tagName === 'BUTTON' || e.target.closest('h4') || e.target.closest('#rlog-preview-btn')) return;
-        dragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
+    function prepareDrag(clientX, clientY) {
         const rect = el.getBoundingClientRect();
+        startX = clientX;
+        startY = clientY;
         origX = rect.left;
         origY = rect.top;
-        el.style.transform = 'none';
-        el.style.left = `${origX}px`;
-        el.style.top = `${origY}px`;
-        el.style.transition = 'none';
-        e.preventDefault();
-    });
+        dragPending = true;
+    }
 
-    header.addEventListener('touchstart', (e) => {
-        if (e.target.tagName === 'BUTTON' || e.target.closest('h4') || e.target.closest('#rlog-preview-btn')) return;
-        dragging = true;
-        startX = e.touches[0].clientX;
-        startY = e.touches[0].clientY;
-        const rect = el.getBoundingClientRect();
-        origX = rect.left;
-        origY = rect.top;
-        el.style.transform = 'none';
-        el.style.left = `${origX}px`;
-        el.style.top = `${origY}px`;
-        el.style.transition = 'none';
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
+    function moveDrag(clientX, clientY) {
+        if (!dragPending) return false;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+        if (!dragging) {
+            if (Math.hypot(dx, dy) < PANEL_HEADER_DRAG_THRESHOLD) return false;
+            dragging = true;
+            header.classList.add('rlog-header-dragging');
+            el.style.transform = 'none';
+            el.style.left = `${origX}px`;
+            el.style.top = `${origY}px`;
+            el.style.transition = 'none';
+        }
         el.style.left = `${origX + dx}px`;
         el.style.top = `${origY + dy}px`;
         el.style.bottom = 'auto';
         el.style.right = 'auto';
-    });
+        return true;
+    }
 
-    document.addEventListener('touchmove', (e) => {
-        if (!dragging) return;
-        e.preventDefault();
-        const dx = e.touches[0].clientX - startX;
-        const dy = e.touches[0].clientY - startY;
-        el.style.left = `${origX + dx}px`;
-        el.style.top = `${origY + dy}px`;
-        el.style.bottom = 'auto';
-        el.style.right = 'auto';
-    }, { passive: false });
-
-    document.addEventListener('mouseup', () => {
-        if (dragging) {
-            dragging = false;
+    function finishDrag() {
+        if (!dragPending && !dragging) return;
+        const didDrag = dragging;
+        dragPending = false;
+        dragging = false;
+        header.classList.remove('rlog-header-dragging');
+        if (didDrag) {
             el.style.transition = '';
             /* 拖拽不改变宽度，但保留重测以覆盖偶发换行变化 */
             syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
         }
+    }
+
+    header.addEventListener('mousedown', (e) => {
+        if (e.button !== 0 || isDragBlocked(e.target)) return;
+        if (isFullscreenActive()) return;
+        prepareDrag(e.clientX, e.clientY);
+        e.preventDefault();
     });
 
-    document.addEventListener('touchend', () => {
-        if (dragging) {
-            dragging = false;
-            el.style.transition = '';
-            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
-        }
+    header.addEventListener('touchstart', (e) => {
+        if (isDragBlocked(e.target)) return;
+        if (isFullscreenActive()) return;
+        prepareDrag(e.touches[0].clientX, e.touches[0].clientY);
     });
+
+    document.addEventListener('mousemove', (e) => {
+        moveDrag(e.clientX, e.clientY);
+    });
+
+    document.addEventListener('touchmove', (e) => {
+        if (moveDrag(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener('mouseup', finishDrag);
+    document.addEventListener('touchend', finishDrag);
+    document.addEventListener('touchcancel', finishDrag);
 }
 
 /* ── 初始化 ──────────────────────────── */
@@ -7703,14 +10348,46 @@ window.__RLogApi = {
             source: { type: 'plugin', label: '插件', detail: '插件/非原生请求' },
             modelName: 'Human-Brain-1.0-Pro',
             messages: [
-                { 
-                    role: 'assistant', 
-                    content: '<thinking>\nGenerating example message...\n\n等等，示例究竟该写什么？\n我到底为什么要做这个？\n算了，随便写一句吧。\n</thinking>\n\n您好！欢迎使用本插件。', 
-                    tokens: 42, 
-                    collapsed: false, 
-                    tokenPrecise: true 
-                }
+                {
+                    role: 'system',
+                    content: "You are a helpful SillyTavern plugin developer. You don't even know how to write Hello World, but that's okay. AI is here, vibe coding is here. Now go build something. First, write an example message to introduce your plugin to the user.",
+                    tokens: 48,
+                    collapsed: false,
+                    tokenPrecise: true,
+                    forceReadEntry: true /* 引导演示：跳过 token 阈值直接展示阅读入口 */
+                },
+                {
+                    role: 'assistant',
+                    content: "<thinking>\nGenerating example message...\n\n等等，示例究竟该写什么？\n我到底为什么要做这个？\n算了，随便写一句吧。\n</thinking>\n\n您好！欢迎使用本插件。",
+                    tokens: 42,
+                    collapsed: false,
+                    tokenPrecise: true
+                },
+                {
+                    role: 'user',
+                    content: ' ',
+                    tokens: 2,
+                    collapsed: true,
+                    tokenPrecise: true
+                },
             ],
+            reply: {
+                role: 'response',
+                content: ' ',
+                tokens: 2,
+                tokenPrecise: true,
+                collapsed: true,
+                status: 'succeed',
+                failReason: '',
+                time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                streaming: true,
+                ttftMs: 420,
+                elapsedMs: 2400,
+                httpStatus: null,
+                upstreamMeta: [],
+                simulated: false,
+                hasOutput: true,
+            },
             collapsed: false,
             isDemo: true /* 标记为演示记录 */
         };
@@ -7724,38 +10401,24 @@ window.__RLogApi = {
         if (panelEl && isPanelVisible) renderPanelContent();
     },
     openDrawer: () => {
-        if (!panelEl) return;
-        closeFilterDrawer();
-        const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
-        const moreBtn = panelEl.querySelector('#rlog-more-btn');
-        if (moreDrawer) moreDrawer.classList.add('expanded');
-        if (moreBtn) moreBtn.classList.add('active-drawer-btn');
+        setMoreDrawerOpen(true);
     },
     closeDrawer: () => {
-        if (!panelEl) return;
-        const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
-        const moreBtn = panelEl.querySelector('#rlog-more-btn');
-        if (moreDrawer) moreDrawer.classList.remove('expanded');
-        if (moreBtn) moreBtn.classList.remove('active-drawer-btn');
+        closeMoreDrawer();
     },
-    /* 筛选抽屉开关（供 tour.js 使用）；打开时自动收起「更多」抽屉 */
+    /* 筛选抽屉开关（供 tour.js 使用）；打开时结束全局搜索并替换“更多” */
     setFilterDrawer: (open) => {
-        if (!panelEl) return;
-        const filterDrawer = panelEl.querySelector('#rlog-filter-drawer');
-        const filterBtn = panelEl.querySelector('#rlog-filter-btn');
-        if (!filterDrawer) return;
-        if (open) {
-            closeMoreDrawer();
-            filterDrawer.classList.add('expanded');
-            filterBtn.classList.add('active-drawer-btn');
-        } else {
-            filterDrawer.classList.remove('expanded');
-            filterBtn.classList.remove('active-drawer-btn');
-        }
+        setFilterDrawerOpen(open);
     },
+    /* 全局搜索抽屉与搜索执行（供引导演示当前功能） */
+    setGlobalSearchDrawer: (open) => {
+        setGlobalSearchDrawerOpen(open);
+    },
+    performGlobalSearch: () => performGlobalSearch(),
     /* 筛选状态读写（供 tour.js 暂存/恢复；setFilterState 触发重建） */
     getFilterState: () => JSON.parse(JSON.stringify(filterState)),
     setFilterState: (state) => {
+        endGlobalSearchForFilterChange();
         filterState = state && typeof state === 'object' ? state : createDefaultFilterState();
         updateFilterChipUI();
         panelContentDirty = true;
@@ -7792,6 +10455,17 @@ window.__RLogApi = {
             if (panelEl && isPanelVisible) renderPanelContent();
         }
     },
+    prepareDemoPreview: () => {
+        const demoRecord = records.find(record => record.isDemo);
+        if (!demoRecord) return;
+        demoRecord.collapsed = false;
+        const previewMessage = demoRecord.messages.find(
+            message => getContentPreview(getMessageDisplayText(message)),
+        );
+        if (previewMessage) previewMessage.collapsed = false;
+        panelContentDirty = true;
+        if (panelEl && isPanelVisible) renderPanelContent();
+    },
     collapseDemo: () => {
         if (records.length > 0) {
             records[0].collapsed = true;
@@ -7808,8 +10482,28 @@ window.__RLogApi = {
     /* 偏好设置（供测试/后续迭代使用） */
     openPreferences: () => openPrefPanel(),
     closePreferences: () => closePrefPanel(),
-    getPreferences: () => JSON.parse(JSON.stringify(preferences)),
+    getQuickReplyEntryEls: () => {
+        const button = getQuickReplyEntryButtonEl();
+        return button ? [button] : [];
+    },
+    syncQuickReplyEntry: () => syncQuickReplyEntry(),
+    getPreferences: () => ({
+        ...JSON.parse(JSON.stringify(preferences)),
+        maxRecords: MAX_RECORDS,
+        replyTimeoutSec,
+        tokenWarningThreshold,
+    }),
     setPreference: (key, value) => setPreference(key, value),
+    /* ST 扩展设置读写（供 tour.js 保存已看版本，也供回归测试核对） */
+    getSettings: () => JSON.parse(JSON.stringify(pluginSettings || createDefaultPluginSettings())),
+    getTourVersion: () => pluginSettings && typeof pluginSettings.tourVersion === 'string'
+        ? pluginSettings.tourVersion
+        : '',
+    setTourVersion: (version) => {
+        if (!pluginSettings) pluginSettings = createDefaultPluginSettings();
+        pluginSettings.tourVersion = typeof version === 'string' ? version : '';
+        persistPluginSettings();
+    },
 };
 
 /* ── 临时测试功能（仅控制台调试函数） ────── */
@@ -7923,7 +10617,7 @@ window.__RLogApi.injectTokenTierTest = function injectTokenTierTest() {
         /* 注入后收起「更多」抽屉，展示测试记录（与原烧瓶按钮点击行为一致） */
         closeMoreDrawer();
     };
-    /* 临时调试功能（后续删除）：模拟回复超时——把 5 分钟缩短成 2 秒，走真实超时收尾流程
+    /* 临时调试功能（后续删除）：模拟回复超时——把当前超时缩短成 2 秒，走真实超时收尾流程
        @param {object} [opts] { reasoning, content } @returns {number|null} captureId */
 
 window.__RLogApi.simulateReplyTimeout = function simulateReplyTimeout(opts = {}) {
@@ -7936,6 +10630,12 @@ window.__RLogApi.simulateReplyTimeout = function simulateReplyTimeout(opts = {})
         const captureId = ++captureSeq;
         const entry = {
             startTime: Date.now(),
+            firstTokenAt: null,
+            streaming: null,
+            elapsedMs: null,
+            httpStatus: null,
+            upstreamMeta: [],
+            upstreamMetaByPath: new Map(),
             timer: null,
             expireTimer: null,
             status: null,
@@ -8015,7 +10715,8 @@ function createSimulateCaptureCtx() {
    `automatic_trigger: true` 只关掉 ST「把输入框内容插成用户消息」那两个分支（不含其它逻辑），
    因此不会产生楼层、不会落盘；输入框里的草稿改为我们自己以纯内存对象临时放进 chat，
    让正则 / 世界书 / 拦截器都能看到它。所有临时改动都在 finally 里逐项还原。
-   全程有兜底超时（SIMULATE_TIMEOUT_MS）：到点停止组装链路、替换 toast，并丢弃本次结果。 */
+   全程有兜底超时（SIMULATE_TIMEOUT_MS）：到点停止组装链路、替换 toast，并丢弃本次结果。
+   运行中按钮可手动停止；手动停止与超时共用取消流程，只区分提示文案。 */
 async function captureSimulatedPrompt() {
     if (simulatePromptRunning) return;
     if (!masterEnabled) {
@@ -8039,45 +10740,66 @@ async function captureSimulatedPrompt() {
         return;
     }
 
-    /* 进入模拟：置运行标志、置灰按钮、显示常驻进度 toast，并启动全程兜底超时 */
+    /* 本次模拟的捕获上下文：贯穿「武装 → 认领建档 → 完成信号」整条链路 */
+    const captureCtx = createSimulateCaptureCtx();
+    const run = {
+        captureCtx,
+        canceled: false,
+        timeoutTimer: null,
+        cancel(reason) {
+            if (run.canceled) return false;
+            run.canceled = true;
+            if (run.timeoutTimer !== null) {
+                clearTimeout(run.timeoutTimer);
+                run.timeoutTimer = null;
+            }
+            /* 先置取消标记再停生成：中止事件可能同步触发后续路径，不能让迟到结果建档 */
+            captureCtx.canceled = true;
+            captureCtx.armed = false;
+            try { ctx.stopGeneration(); } catch (e) { /* ignore */ }
+            showPinToast(reason === 'manual'
+                ? '已停止生成模拟记录'
+                : '模拟失败：生成模拟记录超时');
+            captureCtx.settle(null);
+            return true;
+        },
+    };
+
+    /* 进入模拟：切到停止图标、显示常驻进度 toast，并启动全程兜底超时 */
     simulatePromptRunning = true;
-    setSimulateButtonDisabled(true);
+    simulateActiveRun = run;
+    simulateCaptureCtx = captureCtx;
+    setSimulateButtonRunning(true);
     showPinToast('模拟并拦截中，请稍候（不会实际发送）', { persist: true });
 
-    /* 本次模拟的捕获上下文：贯穿「武装 → 认领建档 → 完成信号」整条链路 */
-    let timedOut = false;
-    const captureCtx = createSimulateCaptureCtx();
-    simulateCaptureCtx = captureCtx;
-
-    const timeoutTimer = setTimeout(() => {
-        timedOut = true;
-        /* 超时＝失败：后到的结果一律丢弃（记录管线建档前会查这个标记），并结束等待 */
-        captureCtx.canceled = true;
-        /* 掐断 ST 组装链路；期间 fetch 硬拦仍生效 */
-        try { ctx.stopGeneration(); } catch (e) { /* ignore */ }
-        showPinToast('模拟失败：生成模拟记录超时');
-        captureCtx.settle(null);
-    }, SIMULATE_TIMEOUT_MS);
+    run.timeoutTimer = setTimeout(() => run.cancel('timeout'), SIMULATE_TIMEOUT_MS);
 
     try {
-        await runSimulatedPromptCapture(ctx, () => timedOut, captureCtx);
+        await runSimulatedPromptCapture(ctx, () => run.canceled, captureCtx);
     } finally {
-        clearTimeout(timeoutTimer);
-        simulateCaptureCtx = null;
-        captureCtx.armed = false;
-        /* 收尾后即便还有迟到的记录管线在跑，也不再落记录 */
-        captureCtx.canceled = true;
-        simulatePromptRunning = false;
-        simulatePromptActive = false;
-        setSimulateButtonDisabled(false);
+        if (run.timeoutTimer !== null) {
+            clearTimeout(run.timeoutTimer);
+            run.timeoutTimer = null;
+        }
+        /* 只清理由本运行对象拥有的全局状态，避免迟到旧任务误清新任务 */
+        if (simulateActiveRun === run) {
+            simulateActiveRun = null;
+            simulateCaptureCtx = null;
+            captureCtx.armed = false;
+            /* 收尾后即便还有迟到的记录管线在跑，也不再落记录 */
+            captureCtx.canceled = true;
+            simulatePromptRunning = false;
+            simulatePromptActive = false;
+            setSimulateButtonRunning(false);
+        }
     }
 }
 
 /* 模拟流程主体（前置检查通过后调用）：真实组装 + 武装目标请求 + fetch 层建档 + 还原。
    @param {object} ctx ST context
-   @param {() => boolean} isTimedOut 兜底超时是否已触发；触发后丢弃本次结果
+   @param {() => boolean} isCanceled 手动停止或超时是否已触发；触发后丢弃本次结果
    @param {object} captureCtx 本次模拟的捕获上下文（武装 / 取消 / 完成信号，见 createSimulateCaptureCtx） */
-async function runSimulatedPromptCapture(ctx, isTimedOut, captureCtx) {
+async function runSimulatedPromptCapture(ctx, isCanceled, captureCtx) {
     /* —— 快照（finally 里逐项还原） —— */
     const meta = ctx.chatMetadata;
     const hadTainted = !!(meta && Object.prototype.hasOwnProperty.call(meta, 'tainted'));
@@ -8126,8 +10848,8 @@ async function runSimulatedPromptCapture(ctx, isTimedOut, captureCtx) {
         }
     }
 
-    /* 超时可能发生在动态引入 / 等待期间：不再进入组装 */
-    if (isTimedOut()) return;
+    /* 停止或超时可能发生在动态引入 / 等待期间：不再进入组装 */
+    if (isCanceled()) return;
 
     simulatePromptActive = true;
     try {
@@ -8174,13 +10896,13 @@ async function runSimulatedPromptCapture(ctx, isTimedOut, captureCtx) {
         simulatePromptActive = false;
     }
 
-    /* 超时后丢弃本次结果：状态已在上面还原，不再等记录、不再改 toast */
-    if (isTimedOut()) return;
+    /* 停止或超时后丢弃本次结果：状态已在上面还原，不再等记录、不再改 toast */
+    if (isCanceled()) return;
 
     /* 等 fetch 层把这条模拟请求记完：由记录管线在建档当刻兑现；
        兜底超时到点同样结束等待（此时按失败处理） */
     const record = await captureCtx.ready;
-    if (isTimedOut()) return;
+    if (isCanceled()) return;
     if (!record) {
         showPinToast('模拟失败：没有拿到可用的提示词数据');
         return;
@@ -8188,19 +10910,80 @@ async function runSimulatedPromptCapture(ctx, isTimedOut, captureCtx) {
     showPinToast('已生成模拟记录（未实际发送，仅供参考）');
 }
 
-/* 模拟按钮：追加到「更多」抽屉末尾，点击组装当前提示词并生成一条模拟记录（不发送请求） */
+/* 模拟按钮：作为主标题栏常驻入口，点击组装当前提示词并生成一条模拟记录（不发送请求） */
 function buildSimulatePromptButton(panelEl) {
     const btn = document.createElement('button');
     btn.id = 'rlog-simulate-btn';
     btn.className = 'rlog-header-btn';
-    btn.title = '生成模拟记录（不实际发送）';
-    btn.innerHTML = '<i class="fa-solid fa-vial"></i>';
-    /* 追加到抽屉末尾（保证顺序：总开关-引导-偏好设置-预览-清空-昼夜-模拟） */
-    const drawer = panelEl.querySelector('#rlog-more-drawer');
-    if (drawer) drawer.appendChild(btn);
+    /* 放在第一道分隔线之前，与筛选 / 搜索 / 更多这组抽屉入口分开。 */
+    const actions = panelEl.querySelector('.rlog-header-actions');
+    const firstDivider = panelEl.querySelector('.rlog-header-actions > .rlog-ui-divider');
+    if (actions) actions.insertBefore(btn, firstDivider);
+    setSimulateButtonRunning(false);
+
+    /* 指针按下时固化意图，避免任务恰好在按下与 click 之间完成时，把停止误判成重新开始。 */
+    btn.addEventListener('pointerdown', (e) => {
+        if (!e.isPrimary || e.button !== 0) return;
+        clearSimulateButtonIntent();
+        const seq = ++simulateButtonIntentSeq;
+        simulateButtonIntent = { action: simulatePromptRunning ? 'stop' : 'start', seq };
+        const cleanup = () => {
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerCancel);
+            window.removeEventListener('blur', onWindowBlur);
+        };
+        const onPointerUp = () => {
+            /* click 在 pointerup 后同一任务内产生；延后一个任务再清，正常 click 仍能消费意图 */
+            scheduleSimulateButtonIntentClear(seq);
+            cleanup();
+        };
+        const onPointerCancel = () => {
+            clearSimulateButtonIntent(seq);
+            cleanup();
+        };
+        const onWindowBlur = () => {
+            clearSimulateButtonIntent(seq);
+            cleanup();
+        };
+        window.addEventListener('pointerup', onPointerUp, { once: true });
+        window.addEventListener('pointercancel', onPointerCancel, { once: true });
+        window.addEventListener('blur', onWindowBlur, { once: true });
+    });
+    /* 拖出按钮即视为放弃本次点击；即使之后在别处松开，也不会把停止意图留给下一次点击。 */
+    btn.addEventListener('pointerleave', () => clearSimulateButtonIntent());
+
+    /* 点击按钮外部时立即兜底清理；正常情况下 pointerleave/pointerup 也会处理。 */
+    if (!document.rlogSimulateIntentOutsideListenerInstalled) {
+        document.rlogSimulateIntentOutsideListenerInstalled = true;
+        document.addEventListener('click', (e) => {
+            if (!simulateButtonIntent) return;
+            const currentButton = panelEl ? panelEl.querySelector('#rlog-simulate-btn') : null;
+            if (!currentButton || !e.composedPath().includes(currentButton)) {
+                clearSimulateButtonIntent();
+            }
+        }, true);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') clearSimulateButtonIntent();
+        });
+    }
+
     btn.addEventListener('click', (e) => {
         /* 拦住冒泡：点击事件会穿透影子根、被 document 上的「点外部收起抽屉」监听当成面板外点击 */
         e.stopPropagation();
+        const intent = simulateButtonIntent ? simulateButtonIntent.action : null;
+        clearSimulateButtonIntent();
+        /* 按下时是停止：任务若刚好已完成，只吞掉迟到 click，绝不启动第二次模拟 */
+        if (intent === 'stop') {
+            if (simulateActiveRun) simulateActiveRun.cancel('manual');
+            return;
+        }
+        if (intent === 'start') {
+            if (simulatePromptRunning) return;
+        } else if (simulatePromptRunning) {
+            /* 无指针意图的程序化 click / 辅助操作：按点击当时的状态执行 */
+            if (simulateActiveRun) simulateActiveRun.cancel('manual');
+            return;
+        }
         captureSimulatedPrompt().catch((err) => {
             console.debug(`[${PLUGIN_KEY}] 模拟提示词失败`, err);
             showPinToast('模拟失败：发生未预期的错误');
@@ -8208,9 +10991,34 @@ function buildSimulatePromptButton(panelEl) {
     });
 }
 
-/* 模拟进行中把按钮置灰（视觉上表示不可重复触发；真正的拦截由 simulatePromptRunning 保证） */
-function setSimulateButtonDisabled(disabled) {
+function scheduleSimulateButtonIntentClear(seq) {
+    if (simulateButtonIntentTimer !== null) clearTimeout(simulateButtonIntentTimer);
+    simulateButtonIntentTimer = setTimeout(() => {
+        simulateButtonIntentTimer = null;
+        clearSimulateButtonIntent(seq);
+    }, 0);
+}
+
+function clearSimulateButtonIntent(seq = null) {
+    if (seq !== null && (!simulateButtonIntent || simulateButtonIntent.seq !== seq)) return;
+    simulateButtonIntent = null;
+    if (simulateButtonIntentTimer !== null) {
+        clearTimeout(simulateButtonIntentTimer);
+        simulateButtonIntentTimer = null;
+    }
+}
+
+/* 模拟按钮状态：空闲显示原图标，运行中保持可点击并切换为停止图标。 */
+function setSimulateButtonRunning(running) {
     if (!panelEl) return;
     const btn = panelEl.querySelector('#rlog-simulate-btn');
-    if (btn) btn.disabled = !!disabled;
+    if (!btn) return;
+    const title = running ? '停止生成模拟记录' : '生成模拟记录（不实际发送）';
+    btn.disabled = false;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.dataset.simulateRunning = running ? 'true' : 'false';
+    btn.innerHTML = running
+        ? '<i class="fa-solid fa-circle-stop"></i>'
+        : '<i class="fa-solid fa-flask"></i>';
 }

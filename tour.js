@@ -6,9 +6,9 @@
    1. 可调参数          引导交互的数值常量（延时、边距等），调参只改这里
    2. 状态变量          引导运行期间的内存状态（当前步、UI 元素引用、记录备份等）
    3. 面板访问助手      经 __RLogApi 走影子根取面板节点 / 在面板内查询
-   4. 引导步骤配置      13 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
+   4. 引导步骤配置      10 个引导步骤的声明：目标元素、文案、行为引用（新增步骤改这里）
    5. 步骤行为辅助函数  步骤配置引用的具名动作（开/关抽屉、预览、搜索），与步骤一一对应
-   6. 版本检查与启动    获取 manifest 版本号，与本地「已看版本」比对后决定是否展示引导
+   6. 版本检查与启动    获取 manifest 版本号，与服务器「已看版本」比对后决定是否展示引导
    7. 引导生命周期      开始 / 结束 / 切换步骤，含引导期间真实记录的备份与恢复
    8. UI 创建与展示     遮罩 / 高亮框 / 气泡的创建，气泡内容构建与事件绑定
    9. 高亮与气泡定位    高亮框与气泡的几何位置计算（positionElements）
@@ -25,17 +25,17 @@
     const TOOLTIP_ARROW_GAP = 8;         /* 气泡与目标元素的间距：气泡小三角到目标边缘的距离（px） */
     const TOOLTIP_EDGE_MARGIN = 10;      /* 气泡防溢出边距：气泡贴近面板左右边缘时的最小留白（px） */
     const ARROW_EDGE_LIMIT = 24;         /* 小三角距气泡边缘限制：防止小三角长在圆角外面或浮空（px） */
+    const DIM_MASK_ID = 'rlog-tour-dim-mask';
 
     /* ⚠️ 兜底版本号：仅当获取 manifest.json 失败时才使用，语义与插件版本号无关。
        不要随插件发布版本更新此值！此值表示「最后一次成功加载的引导版本」的兜底：
        - 若误改为新版本号（如 1.8.0），manifest 获取失败时会被误判为「已看过新引导」而跳过展示。
        - 保持旧值（1.6.0）是为了在 manifest 获取失败时触发引导展示，避免用户完全看不到新功能引导。 */
     let currentTourVersion = '1.6.0'; /* 兜底版本号（勿随插件版本更新，见上方说明） */
-    const STORAGE_KEY = 'RecentRequestLog_tour_version';
-
     /* ── 状态变量 ───────────────────────────────────────────── */
     let currentStep = 0;
     let overlay = null;
+    let dimLayer = null;
     let tooltip = null;
     let highlightBox = null;
     let isActive = false;
@@ -65,61 +65,50 @@
        引用下方「步骤行为辅助函数」区里的具名函数。 */
     const steps = [
         {
-            targetSelector: '.rlog-title-text',
-            desc: '单击此处<strong>折叠/展开</strong>'
-        },
-        {
-            targetSelector: '.rlog-title-count',
-            desc: '<strong>双击</strong>数字设置记录上限',
-            padding: 0
-        },
-        {
-            targetSelector: '.rlog-header-drag-space',
-            desc: '按住空白处<strong>拖动窗口</strong>'
-        },
-        {
-            targetSelector: '.rlog-resize-grip',
-            desc: '按住&nbsp;<i class="fa-solid fa-caret-down" style="transform: rotate(-45deg);"></i>&nbsp;拖动，<strong>调整窗口大小</strong>',
-            placement: 'top',
-            padding: 0
-        },
-        {
             targetSelector: '.rlog-header-actions',
-            desc: '• 更多选项<br>• 筛选记录<br>• 全局搜索（占位）<br>• 折叠所有条目<br>• 关闭面板'
+            desc: '<strong>主标题栏按钮区：</strong><br>生成模拟记录｜功能抽屉｜窗口控制'
         },
         {
-            targetSelector: '#rlog-more-drawer',
-            desc: '点击<strong>更多选项</strong>显示：<br>• 插件总开关<br>• 使用引导<br>• 偏好设置<br>• 内容预览开关<br>• 清空所有记录<br>• 昼/夜模式切换<br>• <strong>生成模拟记录</strong>（不实际发送）',
-            onEnter: enterDrawerStep,
-            onLeave: leaveDrawerStep
-        },
-        {
-            targetSelector: '#rlog-filter-drawer',
-            desc: '点击<strong>筛选</strong>按钮显示：<br>• 原生/插件：按来源隐藏整条记录<br>• Gemini/Claude/DeepSeek/其他：按模型隐藏整条记录<br>• 系统/AI/用户/其他：按角色隐藏记录内的子消息<br>点击切换隐藏/显示，筛选条件可叠加',
+            targetSelectors: ['#rlog-filter-btn', '.rlog-filter-controls'],
+            tooltipTargetSelector: '.rlog-filter-controls',
+            targetHighlightAdjustments: {
+                1: { offsetY: 2 },
+            },
+            desc: '<strong>筛选记录：</strong><br>按来源｜按模型｜按角色',
             onEnter: enterFilterDrawerStep,
             onLeave: leaveFilterDrawerStep
         },
         {
-            targetSelector: '.rlog-record[data-record-index="0"] .rmsg-item .rmsg-preview-text',
-            desc: '开启<strong>内容预览</strong>后，显示消息开头的部分文字',
-            onEnter: enterPreviewStep,
-            onLeave: leavePreviewStep
+            targetSelectors: ['#rlog-global-search-btn', '.rlog-global-search-controls'],
+            tooltipTargetSelector: '.rlog-global-search-controls',
+            targetHighlightAdjustments: {
+                1: { offsetY: 2 },
+            },
+            desc: '<strong>全局搜索：</strong><br>输入关键字，手动点击搜索开始<br>搜索按钮变为更新时，点击可刷新结果<br>点击序号输入数字可快速跳转',
+            onEnter: enterGlobalSearchStep,
+            onLeave: leaveGlobalSearchStep
+        },
+        {
+            targetSelectors: ['#rlog-more-btn', '.rlog-more-controls'],
+            tooltipTargetSelector: '.rlog-more-controls',
+            targetHighlightAdjustments: {
+                1: { offsetY: 2 },
+            },
+            desc: '<strong>更多选项：</strong><br>开关与引导｜设置与显示｜批量操作',
+            onEnter: enterDrawerStep,
+            onLeave: leaveDrawerStep
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-info',
-            desc: '• 角色名<br>• 请求来源<br>• 时间戳<br>• 模型名称<br>• token数 [消息条数]（数字前有“~”表示降级为估算）'
-        },
-        {
-            targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-info',
-            desc: '<strong>长按</strong>这一行可<strong>置顶</strong>该记录或<strong>取消置顶</strong><br>置顶记录不占用普通记录上限'
+            desc: '<strong>记录标题栏：</strong><br>角色名｜来源｜时间戳｜模型｜token总数 [消息条数]<br>长按可置顶 / 取消置顶'
         },
         {
             targetSelector: '.rlog-record[data-record-index="0"] .rlog-record-actions-inner',
-            desc: '<strong>展开时显示：</strong><br>• 搜索<br>• 展开/折叠内部所有消息<br>• 快速置底<br>• 查看全文（复制整条请求）<br>• 删除本条记录'
+            desc: '<strong>记录展开时显示：</strong><br>搜索｜全部展开 / 折叠｜快速置底｜<br>查看全文（原始JSON、复制与导出）<br>｜删除'
         },
         {
             targetSelector: '.rlog-search-box',
-            desc: '• 点击 🔍︎ ，输入关键字进行搜索<br>• 点击箭头或按 Enter/Shift+Enter 在结果间跳转<br>• 再次点击 🔍︎ 可退出搜索',
+            desc: '<strong>单条记录内搜索：</strong><br>点击 🔍︎ 进入搜索模式，再次点击退出<br>输入关键字自动搜索<br>点击序号输入数字可快速跳转',
             /* 自定义高亮框：左边缘对齐放大镜按钮左边缘，上下裁剪点击防护区 */
             highlightAdjust: {
                 leftAlignTo: '.rlog-search-btn',
@@ -130,8 +119,23 @@
             onLeave: leaveSearchStep
         },
         {
-            targetSelector: '.rlog-record[data-record-index="0"] .rmsg-item .rmsg-copy-btn',
-            desc: '<strong>展开时显示：</strong><br>• 复制单条消息<br><br>【引导已结束，点击❔图标重看】'
+            targetSelector: '.rlog-record[data-record-index="0"] .rmsg-item .rmsg-preview-text',
+            desc: '<strong>内容预览：</strong><br>在更多选项中开启，将展示消息开头部分文字',
+            onEnter: enterPreviewStep,
+            onLeave: leavePreviewStep
+        },
+        {
+            targetSelectors: [
+                '.rlog-record[data-record-index="0"] .rmsg-item.role-system .rmsg-read-btn',
+                '.rlog-record[data-record-index="0"] .rmsg-item.role-system .rmsg-copy-btn',
+            ],
+            combineTargets: true,
+            desc: '<strong>角色消息展开时显示：</strong><br>长消息独立阅读（≥800 tokens 出现）｜复制单条消息'
+        },
+        {
+            targetSelector: '.rlog-record[data-record-index="0"] .rmsg-item.role-response .rmsg-response-meta',
+            placement: 'top',
+            desc: '<strong>响应信息：</strong><br>首字｜TPS｜耗时<br>点击 ⓘ 查看更多详情'
         }
     ];
 
@@ -182,10 +186,37 @@
         setFilterDrawerState(false);
     }
 
-    /* 内容预览步骤：进入时展开 demo 记录/消息并开启内容预览，离开时关闭预览 */
+    /* 全局搜索抽屉步骤：进入时打开抽屉并演示一次关键词搜索，离开时关闭并清理结果 */
+    function setGlobalSearchDrawerState(open) {
+        const drawer = q('#rlog-global-search-drawer');
+        if (drawer) drawer.style.transition = 'none';
+        const api = window.__RLogApi;
+        if (api && typeof api.setGlobalSearchDrawer === 'function') {
+            api.setGlobalSearchDrawer(open);
+        }
+        if (drawer) {
+            void drawer.offsetWidth;
+            drawer.style.transition = '';
+        }
+    }
+
+    function enterGlobalSearchStep() {
+        setGlobalSearchDrawerState(true);
+        const inputEl = q('#rlog-global-search-input');
+        if (inputEl) inputEl.value = '示例';
+        if (window.__RLogApi && typeof window.__RLogApi.performGlobalSearch === 'function') {
+            window.__RLogApi.performGlobalSearch();
+        }
+    }
+
+    function leaveGlobalSearchStep() {
+        setGlobalSearchDrawerState(false);
+    }
+
+    /* 内容预览步骤：进入时只展开用于预览的演示消息并开启预览，其他消息沿用原折叠状态 */
     function enterPreviewStep() {
-        if (window.__RLogApi && window.__RLogApi.expandDemo) {
-            window.__RLogApi.expandDemo();
+        if (window.__RLogApi && window.__RLogApi.prepareDemoPreview) {
+            window.__RLogApi.prepareDemoPreview();
         }
         if (window.__RLogApi && window.__RLogApi.forcePreview) {
             window.__RLogApi.forcePreview(true);
@@ -200,7 +231,7 @@
 
     /* 搜索步骤：进入时打开搜索框并搜索「示例」，离开时关闭搜索 */
     function enterSearchStep() {
-        /* 注意：不要在 openSearchForRecord 之前或之后调用 expandDemo/injectDemo 等方法，
+        /* 注意：不要在 openSearchForRecord 之前或之后调用 prepareDemoPreview/injectDemo 等方法，
            它们会触发 renderPanelContent() → resetSearchIfActive() 移除刚创建的搜索框。 */
         if (window.__RLogApi && typeof window.__RLogApi.openSearchForRecord === 'function') {
             window.__RLogApi.openSearchForRecord(0);
@@ -248,10 +279,22 @@
         }
     }
 
-    /* 比对「本地已看版本」与「manifest 当前版本」：不一致（或 force）时开始引导。 */
+    function getSavedTourVersion() {
+        return window.__RLogApi && typeof window.__RLogApi.getTourVersion === 'function'
+            ? window.__RLogApi.getTourVersion()
+            : '';
+    }
+
+    function saveTourVersion(version) {
+        if (window.__RLogApi && typeof window.__RLogApi.setTourVersion === 'function') {
+            window.__RLogApi.setTourVersion(version);
+        }
+    }
+
+    /* 比对「已看版本」与「manifest 当前版本」：不一致（或 force）时开始引导。 */
     async function checkAndStartTour(force = false) {
         await loadManifestVersion();
-        const savedVersion = localStorage.getItem(STORAGE_KEY);
+        const savedVersion = getSavedTourVersion();
         if (force || savedVersion !== currentTourVersion) {
             startTour();
         }
@@ -264,18 +307,16 @@
         const panel = getPanel();
         if (!panel || panel.style.display === 'none') return;
 
-        if (panel.classList.contains('rlog-window-collapsed')) {
-            const titleText = panel.querySelector('.rlog-title-text');
-            if (titleText) titleText.click();
-        }
-
-        /* 收起两个抽屉，避免残留展开状态影响步骤定位 */
+        /* 收起三个抽屉，避免残留展开状态影响步骤定位 */
         if (window.__RLogApi) {
             if (typeof window.__RLogApi.closeDrawer === 'function') {
                 window.__RLogApi.closeDrawer();
             }
             if (typeof window.__RLogApi.setFilterDrawer === 'function') {
                 window.__RLogApi.setFilterDrawer(false);
+            }
+            if (typeof window.__RLogApi.setGlobalSearchDrawer === 'function') {
+                window.__RLogApi.setGlobalSearchDrawer(false);
             }
         }
 
@@ -326,13 +367,15 @@
 
         isActive = false;
 
-        localStorage.setItem(STORAGE_KEY, currentTourVersion);
+        saveTourVersion(currentTourVersion);
 
         if (overlay) overlay.remove();
+        if (dimLayer) dimLayer.remove();
         if (tooltip) tooltip.remove();
         if (highlightBox) highlightBox.remove();
 
         overlay = null;
+        dimLayer = null;
         tooltip = null;
         highlightBox = null;
 
@@ -400,8 +443,23 @@
         overlay = document.createElement('div');
         overlay.className = 'rlog-tour-overlay';
 
+        const svgNs = 'http://www.w3.org/2000/svg';
+        dimLayer = document.createElementNS(svgNs, 'svg');
+        dimLayer.classList.add('rlog-tour-dim');
+        dimLayer.setAttribute('aria-hidden', 'true');
+        dimLayer.innerHTML = `
+            <defs>
+                <mask id="${DIM_MASK_ID}" maskUnits="userSpaceOnUse">
+                    <rect data-rlog-tour-mask-base="1" x="0" y="0" width="100%" height="100%" fill="white"></rect>
+                    <g data-rlog-tour-mask-holes="1"></g>
+                </mask>
+            </defs>
+            <rect data-rlog-tour-dim-fill="1" x="0" y="0" width="100%" height="100%"
+                  mask="url(#${DIM_MASK_ID})"></rect>
+        `;
+
         highlightBox = document.createElement('div');
-        highlightBox.className = 'rlog-tour-highlight';
+        highlightBox.className = 'rlog-tour-highlight-layer';
 
         tooltip = document.createElement('div');
         tooltip.className = 'rlog-tour-tooltip';
@@ -410,6 +468,7 @@
         const panel = getPanel();
         if (panel) {
             panel.appendChild(overlay);
+            panel.appendChild(dimLayer);
             panel.appendChild(highlightBox);
             panel.appendChild(tooltip);
 
@@ -432,9 +491,13 @@
         const step = steps[index];
         const isLast = index === steps.length - 1;
         const isFirst = index === 0;
+        const formattedDesc = step.desc.replace(
+            /｜/g,
+            '<span class="rlog-tour-separator" aria-hidden="true">｜</span>',
+        );
         return `
             <button class="rlog-tour-close" title="退出引导"><i class="fa-solid fa-xmark"></i></button>
-            <div class="rlog-tour-body">${step.desc}</div>
+            <div class="rlog-tour-body">${formattedDesc}</div>
             <div class="rlog-tour-footer">
                 <div class="rlog-tour-dots">
                     ${steps.map((_, i) => `<span class="rlog-tour-dot ${i === index ? 'active' : ''}" data-index="${i}"></span>`).join('')}
@@ -472,10 +535,10 @@
 
     function showStep(index) {
         const step = steps[index];
-        const panel = getPanel();
-        const targetEl = panel ? panel.querySelector(step.targetSelector) : null;
+        const selectors = step.targetSelectors || [step.targetSelector];
+        const targetEls = selectors.map((selector) => q(selector));
 
-        if (!targetEl) {
+        if (targetEls.some((targetEl) => !targetEl)) {
             /* 找不到目标元素时延迟重试（等待 DOM 稳定，如搜索框动态创建） */
             if (findTargetRetryCount < TARGET_RETRY_MAX) {
                 findTargetRetryCount++;
@@ -486,7 +549,7 @@
                 }, TARGET_RETRY_DELAY_MS);
             } else {
                 findTargetRetryCount = 0;
-                console.warn(`[Tour] Target not found: ${step.targetSelector}`);
+                console.warn(`[Tour] Target not found: ${selectors.join(', ')}`);
                 executeStep(index + 1);
             }
             return;
@@ -497,11 +560,11 @@
 
         bindTooltipEvents();
 
-        positionElements(targetEl, step);
+        positionElements(targetEls, step);
     }
 
     /* ── 高亮与气泡定位 ─────────────────────────────────────── */
-    function positionElements(targetEl, step) {
+    function positionElements(targetEls, step) {
         const panel = getPanel();
         if (!panel) return;
 
@@ -509,52 +572,119 @@
         const padding = step.padding !== undefined ? step.padding : HIGHLIGHT_PADDING_DEFAULT;
 
         const panelRect = panel.getBoundingClientRect();
-        const targetRect = targetEl.getBoundingClientRect();
+        const targetRects = targetEls.map((targetEl) => {
+            const rect = targetEl.getBoundingClientRect();
+            return {
+                top: rect.top - panelRect.top,
+                left: rect.left - panelRect.left,
+                width: rect.width,
+                height: rect.height,
+            };
+        });
 
-        /* 计算相对面板内部的位置 */
-        const top = targetRect.top - panelRect.top;
-        const left = targetRect.left - panelRect.left;
-        const width = targetRect.width;
-        const height = targetRect.height;
+        let boxes = targetRects.map((targetRect, index) => {
+            let boxTop = targetRect.top - padding;
+            let boxLeft = targetRect.left - padding;
+            let boxWidth = targetRect.width + padding * 2;
+            let boxHeight = targetRect.height + padding * 2;
 
-        let boxTop = top - padding;
-        let boxLeft = left - padding;
-        let boxWidth = width + padding * 2;
-        let boxHeight = height + padding * 2;
-
-        /* 自定义高亮框调整（用于精准框住搜索区域等）
-           topExtra/bottomExtra 为正表示向内收缩（裁剪），为负表示向外扩展 */
-        if (step.highlightAdjust) {
-            const adj = step.highlightAdjust;
-            /* leftAlignTo：左边界对齐锚点元素（如放大镜按钮）左边缘，
-               动态读取实际位置以适配不同按钮宽度，避免写死固定偏移。 */
-            if (adj.leftAlignTo) {
-                const anchorEl = targetEl.parentElement
-                    ? targetEl.parentElement.querySelector(adj.leftAlignTo)
-                    : null;
-                if (anchorEl) {
-                    const anchorRect = anchorEl.getBoundingClientRect();
-                    const anchorLeft = anchorRect.left - panelRect.left;
-                    /* 左边界 = 锚点左边缘（无额外 padding）；
-                       右边界保持原目标右边缘 + padding（与上下 padding 语义一致） */
-                    boxLeft = anchorLeft;
-                    boxWidth = (left + width + padding) - anchorLeft;
+            /* 自定义高亮框调整（用于精准框住搜索区域等）
+               topExtra/bottomExtra 为正表示向内收缩（裁剪），为负表示向外扩展 */
+            if (index === 0 && step.highlightAdjust) {
+                const adj = step.highlightAdjust;
+                /* leftAlignTo：左边界对齐锚点元素（如放大镜按钮）左边缘，
+                   动态读取实际位置以适配不同按钮宽度，避免写死固定偏移。 */
+                if (adj.leftAlignTo) {
+                    const anchorEl = targetEls[index].parentElement
+                        ? targetEls[index].parentElement.querySelector(adj.leftAlignTo)
+                        : null;
+                    if (anchorEl) {
+                        const anchorRect = anchorEl.getBoundingClientRect();
+                        const anchorLeft = anchorRect.left - panelRect.left;
+                        /* 左边界 = 锚点左边缘（无额外 padding）；
+                           右边界保持原目标右边缘 + padding（与上下 padding 语义一致） */
+                        boxLeft = anchorLeft;
+                        boxWidth = (targetRect.left + targetRect.width + padding) - anchorLeft;
+                    }
+                }
+                if (adj.topExtra !== undefined) {
+                    boxTop += adj.topExtra;
+                    boxHeight -= adj.topExtra;
+                }
+                if (adj.bottomExtra !== undefined) {
+                    boxHeight -= adj.bottomExtra;
                 }
             }
-            if (adj.topExtra !== undefined) {
-                boxTop += adj.topExtra;
-                boxHeight -= adj.topExtra;
+            const targetAdjust = step.targetHighlightAdjustments
+                && step.targetHighlightAdjustments[index];
+            if (targetAdjust) {
+                if (targetAdjust.offsetX !== undefined) boxLeft += targetAdjust.offsetX;
+                if (targetAdjust.offsetY !== undefined) boxTop += targetAdjust.offsetY;
             }
-            if (adj.bottomExtra !== undefined) {
-                boxHeight -= adj.bottomExtra;
-            }
+
+            return { top: boxTop, left: boxLeft, width: boxWidth, height: boxHeight };
+        });
+
+        /* 相邻按钮合并为一个框；抽屉入口与抽屉控件保持两个独立框。 */
+        if (step.combineTargets && boxes.length > 1) {
+            const right = Math.max(...boxes.map((box) => box.left + box.width));
+            const bottom = Math.max(...boxes.map((box) => box.top + box.height));
+            const left = Math.min(...boxes.map((box) => box.left));
+            const top = Math.min(...boxes.map((box) => box.top));
+            boxes = [{ top, left, width: right - left, height: bottom - top }];
         }
 
-        highlightBox.style.boxSizing = ''; /* 恢复默认，防止残留的 border-box 影响 */
-        highlightBox.style.top = `${boxTop}px`;
-        highlightBox.style.left = `${boxLeft}px`;
-        highlightBox.style.width = `${boxWidth}px`;
-        highlightBox.style.height = `${boxHeight}px`;
+        highlightBox.replaceChildren(...boxes.map((box) => {
+            const highlight = document.createElement('div');
+            highlight.className = 'rlog-tour-highlight';
+            highlight.style.top = `${box.top}px`;
+            highlight.style.left = `${box.left}px`;
+            highlight.style.width = `${box.width}px`;
+            highlight.style.height = `${box.height}px`;
+            return highlight;
+        }));
+
+        /* 单个遮罩通过 SVG mask 挖出全部目标，避免多个高亮阴影叠加导致双重压暗。 */
+        const maskBase = dimLayer.querySelector('[data-rlog-tour-mask-base="1"]');
+        const maskHoles = dimLayer.querySelector('[data-rlog-tour-mask-holes="1"]');
+        const dimFill = dimLayer.querySelector('[data-rlog-tour-dim-fill="1"]');
+        const svgNs = 'http://www.w3.org/2000/svg';
+        maskBase.setAttribute('width', panelRect.width);
+        maskBase.setAttribute('height', panelRect.height);
+        dimFill.setAttribute('width', panelRect.width);
+        dimFill.setAttribute('height', panelRect.height);
+        maskHoles.replaceChildren(...boxes.map((box) => {
+            const hole = document.createElementNS(svgNs, 'rect');
+            hole.setAttribute('x', box.left);
+            hole.setAttribute('y', box.top);
+            hole.setAttribute('width', box.width);
+            hole.setAttribute('height', box.height);
+            hole.setAttribute('rx', '4');
+            hole.setAttribute('ry', '4');
+            hole.setAttribute('fill', 'black');
+            return hole;
+        }));
+
+        let anchorRect = targetRects[0];
+        if (step.combineTargets) {
+            const right = Math.max(...targetRects.map((rect) => rect.left + rect.width));
+            const bottom = Math.max(...targetRects.map((rect) => rect.top + rect.height));
+            const left = Math.min(...targetRects.map((rect) => rect.left));
+            const top = Math.min(...targetRects.map((rect) => rect.top));
+            anchorRect = { top, left, width: right - left, height: bottom - top };
+        }
+        if (step.tooltipTargetSelector) {
+            const anchorEl = q(step.tooltipTargetSelector);
+            if (anchorEl) {
+                const rect = anchorEl.getBoundingClientRect();
+                anchorRect = {
+                    top: rect.top - panelRect.top,
+                    left: rect.left - panelRect.left,
+                    width: rect.width,
+                    height: rect.height,
+                };
+            }
+        }
 
         /* 气泡须先置为显示才能取到尺寸，因此延后一帧再定位 */
         tooltip.style.display = 'block';
@@ -568,26 +698,26 @@
             let tooltipLeft = 0;
 
             if (placement === 'top') {
-                tooltipTop = top - tooltipHeight - padding - TOOLTIP_ARROW_GAP;
+                tooltipTop = anchorRect.top - tooltipHeight - padding - TOOLTIP_ARROW_GAP;
                 tooltip.classList.add('rlog-tour-top');
             } else {
                 /* 默认 placement 为 bottom */
-                tooltipTop = top + height + padding + TOOLTIP_ARROW_GAP;
+                tooltipTop = anchorRect.top + anchorRect.height + padding + TOOLTIP_ARROW_GAP;
                 tooltip.classList.remove('rlog-tour-top');
             }
 
             /* 水平居中对齐目标元素 */
-            tooltipLeft = left + (width / 2) - (tooltipWidth / 2);
+            tooltipLeft = anchorRect.left + (anchorRect.width / 2) - (tooltipWidth / 2);
             let arrowLeft = tooltipWidth / 2;
 
             /* 防止溢出面板右侧 */
             if (tooltipLeft + tooltipWidth > panelRect.width - TOOLTIP_EDGE_MARGIN) {
                 tooltipLeft = panelRect.width - tooltipWidth - TOOLTIP_EDGE_MARGIN;
-                arrowLeft = targetRect.left - panelRect.left - tooltipLeft + targetRect.width / 2;
+                arrowLeft = anchorRect.left - tooltipLeft + anchorRect.width / 2;
             } else if (tooltipLeft < TOOLTIP_EDGE_MARGIN) {
                 /* 防止溢出左侧 */
                 tooltipLeft = TOOLTIP_EDGE_MARGIN;
-                arrowLeft = targetRect.left - panelRect.left - tooltipLeft + targetRect.width / 2;
+                arrowLeft = anchorRect.left - tooltipLeft + anchorRect.width / 2;
             }
 
             /* 限制小三角不要超出气泡边界（防止长在圆角外面或浮空） */

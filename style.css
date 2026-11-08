@@ -57,7 +57,6 @@
     --rlog-text-strong: #111827;       /* 强调文字（hover 图标、选中项、弹窗加粗等） */
     --rlog-text-muted: #6b7280;        /* 次要文字/图标（时间、模型、按钮、计数等） */
     --rlog-text-faint: #9ca3af;        /* 弱化文字（计数、占位、折叠箭头、空列表等） */
-    --rlog-text-faint-hover: #4b5563;  /* 弱化文字的 hover 加深色（标题数字 hover） */
     --rlog-icon-faint: #9ca3af;        /* 浅灰图标（折叠箭头、消息展开、浮层关闭等次要图标；暗色比弱化文字略亮） */
     --rlog-text-body: #374151;         /* 消息正文 / 弹窗正文 */
     --rlog-text-char: #27272A;         /* 记录角色名 */
@@ -67,6 +66,8 @@
     --rlog-accent-strong: #0d3a5a;     /* 强调色加深（搜索激活 hover） */
     --rlog-accent-soft: rgba(18, 78, 120, 0.08);  /* 强调色淡背景（搜索激活 hover 背景） */
     --rlog-accent-glow: rgba(18, 78, 120, 0.15);  /* 输入框聚焦外圈光晕 */
+    --rlog-update-border: rgba(18, 78, 120, 0.3); /* 全局搜索更新按钮的静态边框底纹 */
+    --rlog-update-mask: #ffffff;        /* 更新边框柔化后裁回路径的技术遮罩色（不直接显示） */
     --rlog-danger: #c0554e;            /* 危险/删除图标色 */
     --rlog-danger-bg: #f7e7e4;         /* 危险图标 hover 背景 */
     --rlog-success: #10b981;           /* 成功色（总开关图标等） */
@@ -92,7 +93,7 @@
     --rlog-status-fail: #C05E59;        /* 失败标记文字色 */
     --rlog-status-timeout: #B69D24;     /* 超时标记文字色 */
     --rlog-status-simulated: #3E7CB1;   /* 模拟标记文字色（未实际发送） */
-    /* Token 区间配色（0-6 级，7 级在下方另带脉冲动画） */
+    /* Token 区间配色；自定义警示可在任意阈值起覆盖为 7 级红色 */
     --rlog-tier-0: #5B8DB8;
     --rlog-tier-1: #4C9DA8;
     --rlog-tier-2: #4B9F8A;
@@ -100,8 +101,9 @@
     --rlog-tier-4: #B69D24;
     --rlog-tier-5: #C47D4F;
     --rlog-tier-6: #C05E59;
-    --rlog-tier-7: #a94040;             /* >200K 警告色（静止） */
-    --rlog-tier-7-pulse: #db4646;       /* >200K 脉冲动画变亮色 */
+    --rlog-tier-7: #a94040;             /* >200K 固定警告色 / 自定义警示基础色 */
+    --rlog-token-warning-flash: #e05252; /* 自定义警示脉冲变亮色 */
+    --rlog-token-warning-dim: #983535;   /* 自定义警示脉冲变暗色 */
     /* 角色标签色（hover 彩条自动取同色 90% 透明度） */
     --rlog-role-system: #4c4287;
     --rlog-role-user: #0099BC;
@@ -150,7 +152,7 @@
     --rlog-tour-body: #4b5563;          /* 引导正文文字 */
     --rlog-tour-shadow: 0 10px 30px rgba(0, 0, 0, 0.15); /* 气泡投影 */
     --rlog-tour-hl-border: #124e78;     /* 高亮框边框 */
-    --rlog-tour-hl-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4); /* 高亮框外压暗 */
+    --rlog-tour-dim: rgba(0, 0, 0, 0.4); /* 高亮区域外的遮罩 */
     --rlog-tour-dot: #d1d5db;           /* 进度圆点（未到步） */
     --rlog-tour-dot-active: #124e78;    /* 进度圆点（当前步） */
     --rlog-tour-close: #9ca3af;         /* 引导关闭按钮图标 */
@@ -188,7 +190,6 @@
     --rlog-text-strong: #f4f4f5;
     --rlog-text-muted: #a1a1aa;
     --rlog-text-faint: #71717a;
-    --rlog-text-faint-hover: #e4e4e7;
     --rlog-icon-faint: #a1a1aa;
     --rlog-text-body: #e4e4e7;
     --rlog-text-char: #D4D4D8;
@@ -197,6 +198,7 @@
     --rlog-accent-strong: #8bbde0;
     --rlog-accent-soft: rgba(107, 169, 212, 0.15);
     --rlog-accent-glow: rgba(107, 169, 212, 0.15);
+    --rlog-update-border: rgba(166, 212, 246, 0.34);
     --rlog-danger: #d98c87;
     --rlog-danger-bg: rgba(217, 140, 135, 0.16);
     --rlog-hover-bg: rgba(255, 255, 255, 0.08);
@@ -218,7 +220,8 @@
     --rlog-tier-5: #D08755;
     --rlog-tier-6: #ba4e49;
     --rlog-tier-7: #b64048;
-    --rlog-tier-7-pulse: #d34444;
+    --rlog-token-warning-flash: #dd5555;
+    --rlog-token-warning-dim: #aa3e46;
     --rlog-role-system: #9c93d2;
     --rlog-role-user: #5cc0db;
     --rlog-role-assistant: #58c7c9;
@@ -257,7 +260,7 @@
     --rlog-tour-body: #a1a1aa;
     --rlog-tour-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
     --rlog-tour-hl-border: #a6d4f6;
-    --rlog-tour-hl-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+    --rlog-tour-dim: rgba(0, 0, 0, 0.6);
     --rlog-tour-dot: #52525b;
     --rlog-tour-dot-active: #a6d4f6;
     --rlog-tour-close: #71717a;
@@ -280,13 +283,7 @@
     --rlog-dlg-header-text: #1f2937;     /* 弹窗标题栏文字 */
     --rlog-dlg-text: #1f2937;            /* 弹窗默认文字 */
     --rlog-dlg-text-strong: #111827;     /* 弹窗强调文字（加粗/按钮文字） */
-    --rlog-dlg-desc: #4b5563;            /* 弹窗说明文字 */
     --rlog-dlg-close: #9ca3af;           /* 弹窗关闭按钮图标 */
-    --rlog-dlg-input-bg: #ffffff;        /* 输入框背景 */
-    --rlog-dlg-input-border: #d1d5db;    /* 输入框边框 */
-    --rlog-dlg-input-text: #1f2937;      /* 输入框文字 */
-    --rlog-dlg-accent: #124e78;          /* 聚焦边框色 */
-    --rlog-dlg-accent-glow: rgba(18, 78, 120, 0.15); /* 聚焦外圈光晕 */
     --rlog-dlg-shadow: 0 8px 32px rgba(0, 0, 0, 0.15); /* 弹窗投影 */
     --rlog-dlg-confirm-text: #374151;    /* 确认弹窗正文 */
     --rlog-dlg-cancel-bg: #f3f4f6;       /* 取消按钮背景 */
@@ -369,13 +366,7 @@
     --rlog-dlg-header-text: #f4f4f5;
     --rlog-dlg-text: #e4e4e7;
     --rlog-dlg-text-strong: #f4f4f5;
-    --rlog-dlg-desc: #a1a1aa;
     --rlog-dlg-close: #a1a1aa;
-    --rlog-dlg-input-bg: #27272a;
-    --rlog-dlg-input-border: #52525b;
-    --rlog-dlg-input-text: #f4f4f5;
-    --rlog-dlg-accent: #a6d4f6;
-    --rlog-dlg-accent-glow: rgba(107, 169, 212, 0.15);
     --rlog-dlg-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     --rlog-dlg-confirm-text: #a1a1aa;
     --rlog-dlg-cancel-bg: #3f3f46;
@@ -411,6 +402,21 @@
     font-size: 13px; /* 基准字号：影子根不再从宿主继承 ST 的 --mainFontSize（受主题 font_scale 影响），空列表/次要文字以此为基准 */
 }
 
+/* 最大化/恢复：桌面与移动端共用同一套铺满视口规则；移动端由 JS 用稳定像素高度覆盖回退值。
+   !important 用于压过拖拽/缩放写在行内样式里的 top/left/width/height；
+   移除类后原本的行内几何自然恢复。 */
+#rlog-panel.rlog-fullscreen {
+    top: 0 !important;
+    left: 0 !important;
+    transform: none !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: var(--rlog-panel-layout-h, 100vh) !important;
+    min-height: var(--rlog-panel-layout-h, 100vh) !important;
+    max-height: var(--rlog-panel-layout-h, 100vh) !important;
+    border-radius: 0 !important;
+}
+
 /* ── 面板头部 ─────────────────────────────────────── */
 .rlog-panel-header {
     display: flex;
@@ -422,6 +428,14 @@
     user-select: none;
     flex-shrink: 0;
     flex-wrap: wrap; /* 放不下时按钮区整组换到第二行（窄面板 / 移动端 / 移动端全屏）；够宽不触发 */
+    cursor: grab;
+}
+.rlog-panel-header.rlog-header-dragging {
+    cursor: grabbing;
+}
+/* 全屏时标题拖动停用，非交互区域也恢复普通指针 */
+#rlog-panel.rlog-fullscreen .rlog-panel-header {
+    cursor: default;
 }
 
 .rlog-panel-header h4 {
@@ -437,36 +451,29 @@
     font-family: inherit; /* 与「查看全文」标题一致：避免 ST 全局 h4 样式引入不同字体 */
     white-space: nowrap; /* 极窄时标题行整体不换行（逐字纵向排列会把标题栏顶高）；同时挡掉宿主 white-space 继承 */
 }
-/* 标题文字 — 单击折叠/展开窗口 */
+/* 标题文字 — 纯文本 */
 .rlog-title-text {
-    cursor: pointer;
-    transition: color 0.15s;
+    cursor: inherit;
     user-select: none;
     line-height: 1;
     /* 字号继承 .rlog-panel-header h4，想单独改在这里加 font-size */
 }
-.rlog-title-text:hover { color: var(--rlog-accent); }
 
-/* 标题数字 — 双击设置最大记录数，需要留出点击空间 */
+/* 标题数字 — 只显示当前记录数与普通记录上限 */
 .rlog-title-count {
-    cursor: pointer;
     margin-left: 4px; /* 与左侧标题文字的间距（桌面端；移动端在媒体查询里单独覆盖） */
-    padding: 2px 5px 4px; /* 决定双击点击热区与 hover 背景框大小（上紧下松，配合下方 top 视觉居中） */
-    border-radius: 2px; /* hover 背景框圆角 */
+    padding: 2px 5px 4px; /* 与标题文字之间的视觉留白 */
+    border-radius: 2px;
     font-variant-numeric: tabular-nums;
     font-size: 13px; /* 计数字号（桌面端；移动端在媒体查询里单独覆盖） */
     font-weight: 600;
     line-height: 1;
     color: var(--rlog-text-faint);
     background: transparent;
-    transition: color 0.15s, background 0.15s;
+    cursor: inherit;
     user-select: none;
     position: relative;
     top: 1px; /* 与标题文字光学对齐（桌面端；移动端在媒体查询里单独覆盖） */
-}
-.rlog-title-count:hover {
-    color: var(--rlog-text-faint-hover);
-    background: var(--rlog-hover-bg);
 }
 
 .rlog-header-actions {
@@ -477,12 +484,15 @@
     margin-left: auto; /* 按钮区换到第二行后右对齐；单行时无自由空间，不产生位移 */
 }
 
-/* 「更多」「筛选」抽屉是按钮区最前面的 flex 项：展开时按钮区向左延伸，「更多」及其右侧按钮位置不动。
-   折叠态抽屉是零宽槽、两侧各产生一个 gap，用负外边距各抵消半个，保证按钮间距不变。 */
-.rlog-more-drawer:not(.expanded),
-.rlog-filter-drawer:not(.expanded) {
-    margin-left: calc(var(--rlog-header-gap) / -2);
-    margin-right: calc(var(--rlog-header-gap) / -2);
+/* 纯视觉分组线：不进入键盘顺序，也不拦截点击。 */
+.rlog-ui-divider {
+    flex: 0 0 1px;
+    width: 1px;
+    height: 16px;
+    border-radius: 1px;
+    background: var(--rlog-divider);
+    opacity: 0.72;
+    pointer-events: none;
 }
 
 .rlog-header-btn {
@@ -503,7 +513,14 @@
 }
 .rlog-header-btn:hover,
 #rlog-more-btn.active-drawer-btn,
-#rlog-filter-btn.active-drawer-btn { color: var(--rlog-text-strong); background: var(--rlog-hover-bg); }
+#rlog-filter-btn.active-drawer-btn,
+#rlog-global-search-btn.active-drawer-btn { color: var(--rlog-text-strong); background: var(--rlog-hover-bg); }
+
+/* 全局搜索抽屉展开：保留标题栏按钮的悬停底框，放大镜改用搜索激活色 */
+#rlog-global-search-btn.active-drawer-btn {
+    color: var(--rlog-accent);
+    background: var(--rlog-hover-bg);
+}
 
 /* 禁用态（生成模拟记录进行中）：置灰并维持原色，不响应悬停高亮 */
 .rlog-header-btn:disabled {
@@ -535,73 +552,117 @@
 }
 #rlog-close-btn:hover { color: var(--rlog-danger); background: var(--rlog-danger-bg); }
 
-/* ── 更多选项收纳抽屉 (横向滑出) ────────── */
-.rlog-more-drawer {
+/* ── 标题栏下方抽屉（更多 / 筛选 / 全局搜索） ───────────── */
+/* 三个抽屉共用标题栏下方的一行：外层只负责瞬时占位，内层帘幕连同内容作为一整块向下揭示。
+   高度和宽度始终不参与过渡，所以动画期间不会改变标题栏换行状态。 */
+.rlog-more-drawer,
+.rlog-filter-drawer,
+.rlog-global-search-drawer {
+    flex: 0 0 auto;
+    display: block;
+    height: 0;
+    overflow: hidden;
+    transition: none;
+}
+.rlog-filter-drawer.expanded,
+.rlog-more-drawer.expanded,
+.rlog-global-search-drawer.expanded {
+    height: 36px;
+}
+.rlog-global-search-drawer.expanded {
+    position: relative;
+    z-index: 21;
+    overflow: visible;
+}
+.rlog-global-search-guard {
+    display: none;
+    position: absolute;
+    z-index: 25;
+    height: 14px;
+    background: transparent;
+}
+.rlog-global-search-drawer.expanded .rlog-global-search-guard {
+    display: block;
+}
+.rlog-drawer-surface {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 0 16px;
+    background: var(--rlog-bg-header);
+    border-bottom: 1px solid var(--rlog-border-header);
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-3px);
+    transition: none;
+}
+/* 背景、边框和按钮共用同一块位移与裁切时间线；防误触层独立于裁切区域。 */
+.rlog-more-drawer.expanded > .rlog-drawer-surface,
+.rlog-filter-drawer.expanded > .rlog-drawer-surface,
+.rlog-global-search-drawer.expanded > .rlog-drawer-surface {
+    clip-path: inset(0);
+    transform: translateY(0);
+    transition: clip-path 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+                transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 抽屉互切时外侧帘幕保持完整，只让新一组按钮走揭示动画，避免背景瞬间闪空。 */
+#rlog-panel.rlog-drawer-switching .rlog-more-drawer.expanded > .rlog-drawer-surface,
+#rlog-panel.rlog-drawer-switching .rlog-filter-drawer.expanded > .rlog-drawer-surface,
+#rlog-panel.rlog-drawer-switching .rlog-global-search-drawer.expanded > .rlog-drawer-surface {
+    transition: none;
+}
+.rlog-global-search-controls {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 5px;
-    overflow: hidden;
-    height: 0; /* 宽度与高度都要归零：只留宽度归零会被内部内容高度撑高（如筛选抽屉多行分段按钮） */
-    max-width: 0;
-    opacity: 0;
-    /* 展开不做宽度过渡：布局一次到位（含换行），视觉上只让内容从右侧滑进来 —— 位移只重绘/合成、
-       不触发重排，所以「展开后会换行」也不会在动画中途折行，换行与动画得以共存。
-       收起保持瞬时：本侧若写过渡会留下「内容已走、位置还占着」的空档（窄面板下按钮区要等空档
-       结束才回单行）。展开方向的动画写在 .expanded 一侧；各端一致，整体关动画只走极简模式。 */
-    --rlog-drawer-shift: 220px; /* 内容起始位移，取略大于本抽屉内容宽度，保证第一帧完全在盒外 */
-    transition: none;
-    /* 折叠态内容仍按单行布局，靠 overflow:hidden 裁掉 */
-    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
 }
-.rlog-more-drawer > * {
-    transform: translateX(var(--rlog-drawer-shift));
+.rlog-global-search-controls .rlog-global-search-input-wrap {
+    margin-left: 0;
 }
-.rlog-more-drawer.expanded {
-    height: auto;
-    max-width: 560px; /* 展开宽度实际由内容与所在行决定；这里只给个够用的上限 */
+.rlog-more-controls,
+.rlog-filter-controls,
+.rlog-global-search-controls {
     opacity: 1;
-    transition: opacity 0.2s ease;
 }
-.rlog-more-drawer.expanded > * {
-    transform: translateX(0);
-    transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1); /* 过渡只写在展开态：收起方向不播、瞬时归位 */
+
+/* 更多选项的按钮组：与筛选、搜索一样靠右排列，不再挤占主标题栏。 */
+.rlog-more-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
 }
 
 /* ── 筛选抽屉与分段按钮 ─────────────────────── */
-.rlog-filter-drawer {
+.rlog-filter-controls {
     display: flex;
     align-items: center;
     gap: 5px;
-    overflow: hidden;
-    height: 0; /* 避免内部多行分段按钮把标题栏撑高换行 */
-    max-width: 0;
-    opacity: 0;
-    /* 与「更多」抽屉同一套机制（见上方注释） */
-    --rlog-drawer-shift: 280px;
-    transition: none;
-    /* 放不下时内部折行；折行在动画开始前就已定稿，所以不再需要按宽度判断是否关掉动画 */
-    flex-wrap: wrap;
-    white-space: normal;
-    min-width: 0;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
 }
-.rlog-filter-drawer > * {
-    transform: translateX(var(--rlog-drawer-shift));
-}
-.rlog-filter-drawer.expanded {
-    height: auto;
-    max-width: 560px;
-    opacity: 1;
-    transition: opacity 0.2s ease;
-}
-.rlog-filter-drawer.expanded > * {
-    transform: translateX(0);
-    transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1); /* 同「更多」抽屉 */
+.rlog-filter-controls::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
 }
 /* 三组分段按钮（来源/模型/角色）：组内紧贴成一段，组间由抽屉 gap 分隔 */
 .rlog-filter-group {
     display: inline-flex;
     align-items: center;
     gap: 0;
+    flex: 0 0 auto;
 }
 .rlog-filter-chip {
     display: inline-flex;
@@ -669,6 +730,12 @@
 }
 .rlog-filter-chip:hover {
     border-color: var(--rlog-border);
+}
+
+/* 抽屉内置重置：复用搜索文字按钮，仅高度与筛选胶囊保持一致 */
+#rlog-filter-drawer-reset-btn {
+    flex: 0 0 auto;
+    height: 26px;
 }
 
 /* 筛选按钮与激活圆点 */
@@ -847,6 +914,10 @@
 .rlog-resize-grip:hover::after {
     border-color: transparent transparent var(--rlog-resize-hover) transparent;
 }
+/* 全屏期间不提供缩放入口：隐藏小三角并从视觉上移除热区 */
+#rlog-panel.rlog-fullscreen .rlog-resize-grip {
+    display: none;
+}
 
 /* ── 单条记录 ─────────────────────────────────────── */
 .rlog-record {
@@ -975,17 +1046,22 @@
 .rlog-total-tokens .rlog-token-tier-5 { color: var(--rlog-tier-5); }
 .rlog-total-tokens .rlog-token-tier-6 { color: var(--rlog-tier-6); }
 
-/* >200K 深红 + 低频脉冲变亮（纯 color 动画，不动 filter） */
+/* >200K 固定深红；只有达到自定义提醒阈值时才叠加警示脉冲 */
 .rlog-total-tokens .rlog-token-tier-7 {
     color: var(--rlog-tier-7);
-    animation: rlog-token-pulse 4s ease-in-out infinite;
 }
 
-/* 颜色取动画元素的 --rlog-tier-7 变量，亮/暗自动适配 */
-@keyframes rlog-token-pulse {
-    0%, 88%   { color: var(--rlog-tier-7); }
-    95%       { color: var(--rlog-tier-7-pulse); }
-    100%      { color: var(--rlog-tier-7); }
+/* 1.5 秒暗红→亮红→暗红连续脉冲；用略高字重与颜色明度差增强可读性。极简模式会对该类单独保留动画 */
+.rlog-total-tokens .rlog-token-warning {
+    color: var(--rlog-tier-7);
+    font-weight: 500;
+    animation: rlog-token-warning 1.6s linear infinite;
+}
+
+/* 颜色取主题变量，亮/暗自动适配 */
+@keyframes rlog-token-warning {
+    0%, 100% { color: var(--rlog-token-warning-dim); }
+    50%      { color: var(--rlog-token-warning-flash); }
 }
 
 .rlog-source-badge {
@@ -1115,8 +1191,8 @@
 .rlog-jump-bottom-btn svg,
 .rlog-read-jump-top-btn svg,
 .rlog-read-jump-bottom-btn svg {
-    width: 1.2em;
-    height: 1.2em;
+    width: 1.3em;
+    height: 1.3em;
     display: block;
     flex-shrink: 0;
 }
@@ -1225,7 +1301,10 @@
 
 /* 搜索框内部按钮（上下箭头）：比外部操作按钮紧凑，给输入框留出更多空间 */
 .rlog-search-prev,
-.rlog-search-next {
+.rlog-search-next,
+.rlog-global-search-prev,
+.rlog-global-search-next,
+.rlog-search-text-btn {
     padding: 0;
     width: 20px;
     height: 20px;
@@ -1242,22 +1321,89 @@
     position: relative; /* 为图标绝对定位提供参考 */
 }
 .rlog-search-prev:hover:not(:disabled),
-.rlog-search-next:hover:not(:disabled) {
+.rlog-search-next:hover:not(:disabled),
+.rlog-global-search-prev:hover:not(:disabled),
+.rlog-global-search-next:hover:not(:disabled),
+.rlog-search-text-btn:hover:not(:disabled) {
     background: var(--rlog-hover-bg);
     color: var(--rlog-text-strong);
+}
+.rlog-search-text-btn {
+    width: auto;
+    min-width: 30px;
+    padding: 0 4px;
+    font-size: 11px;
+    font-family: inherit;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+/* 更新提示：SVG 圆角路径负责均匀描边，内部锥形渐变恢复 CSS 版的流动光感 */
+#rlog-global-search-submit.rlog-global-search-update {
+    color: var(--rlog-accent);
+}
+#rlog-global-search-submit.rlog-global-search-update:hover:not(:disabled) {
+    color: var(--rlog-accent-strong);
+}
+.rlog-global-search-update-border {
+    display: none;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+}
+#rlog-global-search-submit.rlog-global-search-update .rlog-global-search-update-border {
+    display: block;
+}
+.rlog-global-search-update-border-base {
+    fill: none;
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+}
+.rlog-global-search-update-border-base {
+    stroke: var(--rlog-update-border);
+}
+.rlog-global-search-update-border-mask-shape {
+    stroke: var(--rlog-update-mask);
+}
+@property --rlog-update-border-angle {
+    syntax: '<angle>';
+    inherits: false;
+    initial-value: 0deg;
+}
+.rlog-global-search-update-border-glow {
+    width: 100%;
+    height: 100%;
+    background: conic-gradient(
+        from var(--rlog-update-border-angle),
+        var(--rlog-update-border) 0deg 230deg,
+        var(--rlog-accent) 285deg,
+        var(--rlog-update-border) 340deg 360deg
+    );
+    animation: rlog-search-update-border-flow 3.2s linear infinite;
+}
+@keyframes rlog-search-update-border-flow {
+    from { --rlog-update-border-angle: 0deg; }
+    to   { --rlog-update-border-angle: 360deg; }
 }
 
 /* FA 图标几何居中：绝对定位必须落在 ::before（字形本体）上，不能放 <i>——<i> 的行盒仍受
    line-height 与字形内白边影响，盒子居中 ≠ 字形居中 */
 .rlog-search-prev i,
-.rlog-search-next i {
+.rlog-search-next i,
+.rlog-global-search-prev i,
+.rlog-global-search-next i {
     position: relative; /* 作为 ::before 字形绝对定位的参考容器 */
     display: block;
     width: 100%;
     height: 100%;
 }
 .rlog-search-prev i::before,
-.rlog-search-next i::before {
+.rlog-search-next i::before,
+.rlog-global-search-prev i::before,
+.rlog-global-search-next i::before {
     position: absolute;
     top: 50%;
     left: 50%;
@@ -1266,7 +1412,8 @@
 }
 
 /* 搜索输入框容器：弹性占满剩余空间，内部为透明输入框 + 不收缩的计数，计数变宽时挤压输入框 */
-.rlog-search-input-wrap {
+.rlog-search-input-wrap,
+.rlog-global-search-input-wrap {
     flex: 1 1 auto;
     width: 140px;           /* flex-basis 基础宽度 */
     min-width: 0;           /* 可完全弹性收缩 */
@@ -1282,16 +1429,19 @@
     padding-right: 5px;     /* 计数右侧的固定边距：数字变宽时向左扩展 */
     transition: background 0.15s ease;
 }
-.rlog-search-input-wrap:hover {
+.rlog-search-input-wrap:hover,
+.rlog-global-search-input-wrap:hover {
     background: var(--rlog-search-bg-hover);
 }
-.rlog-search-input-wrap:focus-within {
+.rlog-search-input-wrap:focus-within,
+.rlog-global-search-input-wrap:focus-within {
     background: var(--rlog-search-bg-hover);
 }
 
 /* 搜索输入框：!important 强制清掉边框/outline/阴影/默认外观，防止 ST 全局
    input:focus-visible 之类规则加边框、在它与计数之间出现细线 */
-.rlog-search-input {
+.rlog-search-input,
+.rlog-global-search-input {
     flex: 1 1 auto;
     min-width: 0;           /* 可完全弹性收缩 */
     height: 100%;
@@ -1312,12 +1462,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.rlog-search-input::placeholder {
+.rlog-search-input::placeholder,
+.rlog-global-search-input::placeholder {
     color: var(--rlog-search-ph);
 }
 
 /* 匹配计数（如 3/18）：与操作按钮同高、右对齐，数字变宽时向左挤压输入框 */
-.rlog-search-count {
+.rlog-search-count,
+.rlog-global-search-count {
     font-size: 11px;
     font-family: inherit; /* 与其他面板文字一致，不使用等宽字体 */
     font-variant-numeric: tabular-nums;
@@ -1336,6 +1488,56 @@
     text-overflow: ellipsis;
 }
 
+/* 当前序号是计数内的紧凑数字编辑器；分母保持只读，点击后可直接输入目标序号 */
+.rlog-search-count-current {
+    min-width: 1ch;
+    max-width: 100%;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-variant-numeric: inherit;
+    line-height: inherit;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: text;
+    flex-shrink: 1;
+}
+.rlog-search-count-current:hover,
+.rlog-search-count-current:focus {
+    color: var(--rlog-text-strong);
+    text-decoration: underline;
+    text-decoration-color: var(--rlog-accent);
+    text-underline-offset: 1px;
+}
+.rlog-search-count-current:focus {
+    outline: 1px solid var(--rlog-accent);
+    outline-offset: -1px;
+}
+.rlog-search-count-current[contenteditable="false"] {
+    cursor: default;
+    text-decoration: none;
+    outline: none;
+}
+.rlog-search-count-current.rlog-search-count-invalid {
+    color: var(--rlog-danger);
+    text-decoration-color: var(--rlog-danger);
+    outline-color: var(--rlog-danger);
+}
+.rlog-search-count-separator,
+.rlog-search-count-total {
+    flex-shrink: 0;
+}
+
+/* 全局搜索的结果范围更大，单独放宽计数，完整保留约五位结果 */
+.rlog-global-search-count {
+    max-width: 76px;
+}
+
 /* 有关键词但无命中：计数转红 */
 .rlog-search-count-empty {
     color: var(--rlog-danger);
@@ -1343,7 +1545,9 @@
 
 /* 禁用态（无结果或仅一个结果时箭头灰显） */
 .rlog-search-prev:disabled,
-.rlog-search-next:disabled {
+.rlog-search-next:disabled,
+.rlog-global-search-prev:disabled,
+.rlog-global-search-next:disabled {
     color: var(--rlog-search-disabled);
     cursor: default;
 }
@@ -1486,7 +1690,8 @@ mark.rlog-search-mark-current {
     line-height: 1;
 }
 
-.rmsg-copy-btn {
+.rmsg-copy-btn,
+.rmsg-read-btn {
     background: transparent;
     border: none;
     border-radius: 4px;
@@ -1502,13 +1707,20 @@ mark.rlog-search-mark-current {
     justify-content: center;
     line-height: 1;
 }
-.rmsg-copy-btn:hover { background: var(--rlog-hover-bg); color: var(--rlog-text-strong); }
+.rmsg-copy-btn:hover,
+.rmsg-read-btn:hover { background: var(--rlog-hover-bg); color: var(--rlog-text-strong); }
+.rmsg-read-btn[hidden] { display: none; }
+/* 两个相邻操作按钮单独收紧间距，不改变消息标题栏其他元素间距 */
+.rmsg-read-btn:not([hidden]) + .rmsg-copy-btn {
+    margin-left: -3px;
+}
 
 /* 消息折叠状态 */
 .rmsg-item.collapsed .rmsg-content { display: none; }
 
-/* 折叠时隐藏复制按钮 */
-.rmsg-item.collapsed .rmsg-copy-btn {
+/* 折叠时隐藏阅读与复制按钮 */
+.rmsg-item.collapsed .rmsg-copy-btn,
+.rmsg-item.collapsed .rmsg-read-btn {
     display: none;
 }
 
@@ -1554,6 +1766,12 @@ mark.rlog-search-mark-current {
     position: relative; /* 为 overlay 进度条提供定位参考 */
 }
 
+/* 全屏时把正文高度上限交给面板稳定高度：给面板栏、记录栏、消息栏及底部留白预留 160px，
+   长消息仍在正文内部滚动；移动端键盘变化不会改动这个值。 */
+#rlog-panel.rlog-fullscreen .rmsg-content {
+    max-height: calc(var(--rlog-panel-layout-h, 100vh) - 160px);
+}
+
 /* ── 复制反馈 ────────────────────────────────────── */
 .copy-success { border-color: var(--rlog-copy-s-border) !important; background: var(--rlog-copy-s-bg) !important; color: var(--rlog-copy-s-text) !important; }
 .copy-fail { border-color: var(--rlog-copy-f-border) !important; background: var(--rlog-copy-f-bg) !important; color: var(--rlog-copy-f-text) !important; }
@@ -1592,6 +1810,119 @@ mark.rlog-search-mark-current {
     line-height: 1.3;
     display: inline-block;
     vertical-align: middle;
+}
+
+/* ── Response 性能指标：固定占用原内容预览位置，宽度不足时随标题栏宽度缩小字号 ── */
+.rmsg-header {
+    container-type: inline-size;
+}
+.rmsg-response-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--rlog-text-faint);
+    line-height: 1.3;
+    white-space: nowrap;
+}
+.rmsg-response-metrics {
+    min-width: 0;
+    font-size: clamp(9.5px, 3.4cqi, 11px);
+    font-variant-numeric: tabular-nums;
+    /* 先按标题栏宽度缩字号；极窄时仍放不下则自然换行，不把末项直接省略掉 */
+    white-space: normal;
+}
+.rmsg-response-info {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.rmsg-response-info:hover,
+.rmsg-response-info:focus-visible {
+    background: var(--rlog-hover-bg);
+    color: var(--rlog-text-muted);
+    outline: none;
+}
+
+/* Response 指标说明：Popover + 锚点定位；优先单行，达到宽度上限后自然换行 */
+.rlog-response-meta-tip {
+    --rlog-response-meta-tip-shift-x: -4px;
+    position-anchor: --rlog-response-meta-anchor;
+    inset: auto;
+    top: anchor(bottom);
+    left: anchor(left);
+    translate: var(--rlog-response-meta-tip-shift-x) 6px;
+    position-try-fallbacks: --rlog-response-meta-tip-above;
+    width: max-content;
+    /* 左缘贴近 ⓘ；为图标所在列预留空间，窄屏时在剩余宽度内自然换行 */
+    max-width: clamp(140px, calc(100vw - 120px), 420px);
+    margin: 0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--rlog-pin-toast-bg);
+    border: 1px solid var(--rlog-pin-toast-border);
+    color: var(--rlog-pin-toast-text);
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: break-word;
+    pointer-events: none;
+}
+
+/* 免责声明弱化；基础信息与原始字段分区，只有存在采集结果时才渲染字段列表 */
+.rlog-response-tip-disclaimer {
+    margin-bottom: 4px;
+    font-size: 10.5px;
+    opacity: 0.65;
+}
+
+.rlog-response-tip-base {
+    line-height: 1.45;
+}
+
+.rlog-response-tip-fields {
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid var(--rlog-pin-toast-border);
+    display: grid;
+    gap: 2px;
+}
+
+.rlog-response-tip-field {
+    display: flex;
+    gap: 4px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.rlog-response-tip-key {
+    flex: 0 0 auto;
+    opacity: 0.78;
+}
+
+.rlog-response-tip-value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* 下方放不下时翻到 ⓘ 上方 */
+@position-try --rlog-response-meta-tip-above {
+    top: auto;
+    bottom: anchor(top);
+    translate: var(--rlog-response-meta-tip-shift-x) -6px;
 }
 
 /* ── 总开关按钮 ────────────────────────────────
@@ -1719,41 +2050,6 @@ mark.rlog-search-mark-current {
     padding: 12px;
 }
 
-.rlog-dialog-desc {
-    margin: 0 0 10px 0;
-    font-size: 12px;
-    line-height: 1.55;
-    color: var(--rlog-dlg-desc);
-}
-
-.rlog-dialog-desc strong {
-    color: var(--rlog-dlg-text-strong);
-}
-
-/* 输入行 */
-.rlog-dialog-input-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-}
-
-.rlog-dialog-input {
-    flex: 1;
-    padding: 6px 10px;
-    border: 1px solid var(--rlog-dlg-input-border);
-    border-radius: 2px;
-    font-size: 13px;
-    color: var(--rlog-dlg-input-text);
-    background: var(--rlog-dlg-input-bg);
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-}
-.rlog-dialog-input:focus {
-    border-color: var(--rlog-dlg-accent);
-    box-shadow: 0 0 0 2px var(--rlog-dlg-accent-glow);
-}
-
 /* 确定按钮 */
 .rlog-dialog-btn {
     padding: 6px 16px;
@@ -1838,13 +2134,30 @@ mark.rlog-search-mark-current {
     pointer-events: auto;
 }
 
+.rlog-tour-dim {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 99998;
+}
+.rlog-tour-dim [data-rlog-tour-dim-fill="1"] {
+    fill: var(--rlog-tour-dim);
+}
+
+.rlog-tour-highlight-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 99999;
+}
+
 .rlog-tour-highlight {
     position: absolute;
     border: 2px solid var(--rlog-tour-hl-border);
     border-radius: 4px;
-    box-shadow: var(--rlog-tour-hl-shadow);
     pointer-events: none;
-    z-index: 99999;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -1929,7 +2242,15 @@ mark.rlog-search-mark-current {
     line-height: 1.5;
     color: var(--rlog-tour-body);
     margin-bottom: 16px;
-    padding-right: 20px; /* 避开右上角关闭按钮 */
+    /* 首行通常是短标题，正文不再为右上角关闭按钮预留整列宽度 */
+}
+.rlog-tour-body > strong {
+    font-size: 13.5px;
+}
+.rlog-tour-separator {
+    color: var(--rlog-divider);
+    font-weight: normal;
+    opacity: 0.72;
 }
 
 .rlog-tour-footer {
@@ -2116,7 +2437,7 @@ mark.rlog-search-mark-current {
     font-family: inherit;
 }
 
-/* ── 右侧操作区：格式切换按钮 + 回顶/置底/复制/关闭 统一靠右排列 ── */
+/* ── 右侧操作区：格式切换按钮 + 回顶/置底/导出/复制/关闭 统一靠右排列 ── */
 .rlog-read-header-actions {
     display: flex;
     align-items: center;
@@ -2124,7 +2445,7 @@ mark.rlog-search-mark-current {
     flex-shrink: 0;
 }
 
-/* 格式切换按钮（等宽字体 {}）：非默认格式用重点色 + 常驻 hover 底色。
+/* 格式切换按钮（等宽字体 {}） ：非默认格式用重点色 + 常驻 hover 底色。
    用字体而非 SVG 是为了贴正文风格；等宽字体最粗只有 700，故用 -webkit-text-stroke 加粗 */
 .rlog-read-format-btn {
     color: var(--rlog-read-btn);
@@ -2146,10 +2467,11 @@ mark.rlog-search-mark-current {
     color: var(--rlog-accent-strong);
 }
 
-/* ── 回顶 / 置底 / 复制 / 关闭 / 格式切换按钮 ─────────────
+/* ── 回顶 / 置底 / 导出 / 复制 / 关闭 / 格式切换按钮 ─────────────
    比主标题栏按钮更小：20×20，适配较矮的「查看全文」标题栏 */
 .rlog-read-jump-top-btn,
 .rlog-read-jump-bottom-btn,
+.rlog-read-export-btn,
 .rlog-read-copy-btn,
 .rlog-read-close-btn,
 .rlog-read-format-btn {
@@ -2171,6 +2493,7 @@ mark.rlog-search-mark-current {
 /* 字号：关闭按钮图标比其余按钮稍大 */
 .rlog-read-jump-top-btn,
 .rlog-read-jump-bottom-btn,
+.rlog-read-export-btn,
 .rlog-read-copy-btn,
 .rlog-read-format-btn {
     font-size: 11px;
@@ -2180,6 +2503,7 @@ mark.rlog-search-mark-current {
 }
 .rlog-read-jump-top-btn:hover,
 .rlog-read-jump-bottom-btn:hover,
+.rlog-read-export-btn:hover,
 .rlog-read-copy-btn:hover {
     background: var(--rlog-hover-bg);
     color: var(--rlog-text-strong);
@@ -2219,6 +2543,34 @@ mark.rlog-search-mark-current {
     flex-shrink: 0;
     height: 6px;
     background: transparent;
+}
+
+/* 轻量单条消息阅读层：无标题栏，关闭按钮悬浮在正文右上角 */
+.rlog-message-read-close-btn {
+    position: absolute;
+    top: 10px;
+    right: 16px;
+    z-index: 20;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: var(--rlog-read-header-bg);
+    color: var(--rlog-read-btn);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+.rlog-message-read-close-btn:hover {
+    color: var(--rlog-danger);
+    /* 暗色危险底色是半透明的；叠在不透明标题栏底色上，避免悬浮时透出正文 */
+    background-color: var(--rlog-read-header-bg);
+    background-image: linear-gradient(var(--rlog-danger-bg), var(--rlog-danger-bg));
 }
 
 /* ============================================================
@@ -2348,25 +2700,51 @@ mark.rlog-search-mark-current {
     gap: 12px;
     padding: 6px 0;
 }
+/* 设置项之间按功能分组：沿用标题区分隔线的颜色与粗细，设置列表仍为一个整体 */
+.rlog-pref-item.rlog-pref-item-divided {
+    border-top: 1px solid var(--rlog-border-header);
+    margin-top: 3px; /* 分隔线上方间距 */
+    padding-top: 9px; /* 分隔线下方间距（基础为 6px，当前多加 3px） */
+}
 
 /* 滚动提示箭头：仅状态提示、不参与交互、不占固定高度，由 JS 加 .rlog-pref-arrow-visible 显示。
-   选择器带前缀提高优先级，否则会输给影子内 FA 固壳的 .fa-solid{display:inline-block}。 */
+   选择器带前缀提高优先级，否则会输给影子内 FA 固壳的 .fa-solid{display:inline-block}。
+   显隐只切 visibility，让两个箭头的动画共用同一节拍；display:none 会在箭头出现时重启动画，
+   导致上下箭头短暂同时朝同一方向移动。 */
 .rlog-pref-list-wrap .rlog-pref-scroll {
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
-    color: var(--rlog-text-muted);
-    opacity: 0.55;
+    color: var(--rlog-accent);
+    opacity: 0.8;
     pointer-events: none;
     font-size: 10px;
     line-height: 1;
     z-index: 2;
-    display: none;
+    display: block;
+    visibility: hidden;
 }
 .rlog-pref-list-wrap .rlog-pref-scroll-up { top: 2px; }   /* 与上方分隔线空开一段 */
 .rlog-pref-list-wrap .rlog-pref-scroll-down { bottom: 0.5px; } /* 与下方边框空开一段 */
 .rlog-pref-list-wrap .rlog-pref-scroll.rlog-pref-arrow-visible {
-    display: block;
+    visibility: visible;
+}
+
+/* 滚动提示箭头沿指向缓慢浮动；动画挂在基础类上，显隐不打断共用节拍。
+   关键帧保留水平居中，避免动画覆盖定位。 */
+@keyframes rlog-pref-scroll-float-up {
+    0%, 100% { transform: translate(-50%, 0); }
+    50% { transform: translate(-50%, -2px); }
+}
+@keyframes rlog-pref-scroll-float-down {
+    0%, 100% { transform: translate(-50%, 0); }
+    50% { transform: translate(-50%, 2px); }
+}
+.rlog-pref-list-wrap .rlog-pref-scroll-up {
+    animation: rlog-pref-scroll-float-up 2.6s ease-in-out infinite;
+}
+.rlog-pref-list-wrap .rlog-pref-scroll-down {
+    animation: rlog-pref-scroll-float-down 2.6s ease-in-out infinite;
 }
 
 /* 设置项文本块：标题 + 说明 组成一个左对齐的纵向区块 */
@@ -2388,6 +2766,31 @@ mark.rlog-search-mark-current {
     line-height: 1.5;
     color: var(--rlog-text-muted);
     user-select: none;
+}
+
+/* 偏好数字输入框：记录上限、等待超时与提醒阈值共用，并与设置项文本块垂直居中 */
+.rlog-pref-number-input {
+    flex-shrink: 0;
+    width: 44px;
+    height: 18px;
+    padding: 0 3px;
+    border: 1px solid var(--rlog-border);
+    border-radius: 2px;
+    background: var(--rlog-bg);
+    color: var(--rlog-text);
+    font: inherit;
+    font-size: 10px;
+    line-height: 16px;
+    text-align: right;
+    box-sizing: border-box;
+    outline: none;
+    appearance: none;
+}
+.rlog-pref-number-input:focus {
+    border-color: var(--rlog-accent);
+}
+.rlog-pref-number-input.rlog-pref-input-invalid {
+    border-color: var(--rlog-danger);
 }
 
 /* Toggle 开关：细线轨道 + 实心方块滑块，关闭/开启靠滑块位置与配色区分 */
@@ -2525,7 +2928,7 @@ mark.rlog-search-mark-current {
     white-space: nowrap;
     pointer-events: none;
     opacity: 0;
-    z-index: 60; /* 高于面板头部与记录标题栏，只临时覆盖 */
+    z-index: 260; /* 高于面板头部、记录标题栏与偏好设置遮罩，保证输入错误提示可见 */
     transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .rlog-pin-toast.rlog-pin-toast-active {
@@ -2543,14 +2946,20 @@ mark.rlog-search-mark-current {
     #rlog-panel {
         width: 100vw;
         max-width: 100vw;
-        min-height: 50vh;
-        max-height: 75vh;
+        min-height: var(--rlog-mobile-min-h, 50vh);
+        max-height: var(--rlog-mobile-max-h, 75vh);
         top: 40px;
         border-radius: 0;
     }
     .rlog-pin-toast {
         font-size: 11px;
         padding: 3px 6px; /* 移动端 toast 内边距 */
+    }
+    .rlog-response-meta-tip {
+        /* 以 ⓘ 左缘为基准；数值越小（更负）越靠左，越大（越接近 0 或正数）越靠右 */
+        --rlog-response-meta-tip-shift-x: -4px;
+        max-width: var(--rlog-response-meta-tip-max-width, calc(100vw - 16px));
+        font-size: 11px;
     }
     /* 移动端浮标（≤768px）：宿主尺寸由 index.js getBadgeSize() 同步缩小，这里只缩图标 */
     .rlog-badge-visual {
@@ -2574,6 +2983,28 @@ mark.rlog-search-mark-current {
     }
     .rlog-header-actions {
         --rlog-header-gap: 3px; /* 移动端按钮间距（抽屉与「更多」按钮随之一起变）；gap 继承基础规则 */
+    }
+    .rlog-ui-divider {
+        height: 13px;
+    }
+    .rlog-more-drawer.expanded,
+    .rlog-filter-drawer.expanded,
+    .rlog-global-search-drawer.expanded {
+        height: 32px;
+    }
+    .rlog-drawer-surface {
+        padding: 0 10px;
+    }
+    /* “更多”与主标题栏共用右侧 6px 留白，按钮右缘保持同一条线。 */
+    .rlog-more-drawer > .rlog-drawer-surface {
+        padding-right: 6px;
+    }
+    .rlog-global-search-controls .rlog-global-search-input-wrap {
+        width: 140px;
+        max-width: 140px;
+    }
+    .rlog-global-search-controls {
+        gap: 4px;
     }
     .rlog-header-btn {
         font-size: 12px;
@@ -2624,26 +3055,34 @@ mark.rlog-search-mark-current {
         right: -20px;
     }
     .rlog-search-prev,
-    .rlog-search-next {
+    .rlog-search-next,
+    .rlog-global-search-prev,
+    .rlog-global-search-next {
         width: 20px;
         height: 20px;
         font-size: 11px;
     }
-    .rlog-search-input-wrap {
+    .rlog-search-input-wrap,
+    .rlog-global-search-input-wrap {
         width: 90px;
         min-width: 0;       /* 移动端同样可完全弹性收缩 */
         max-width: 180px;   /* 移动端空间充足时同样放宽，给输入框更大宽度 */
         height: 20px;
         border-radius: 3px;
     }
-    .rlog-search-input {
+    .rlog-search-input,
+    .rlog-global-search-input {
         font-size: 11px;
         padding: 0 6px;
     }
-    .rlog-search-count {
+    .rlog-search-count,
+    .rlog-global-search-count {
         font-size: 10px;
         min-width: 0;           /* 移动端同样由内容决定宽度 */
         max-width: 44px;        /* 移动端更窄，防止挤占按钮 */
+    }
+    .rlog-global-search-count {
+        max-width: 70px;
     }
     .rlog-record-header {
         padding: 8px 10px;
@@ -2663,7 +3102,8 @@ mark.rlog-search-mark-current {
         padding: 0;
     }
     .rmsg-tokens { font-size: 10px; }
-    .rmsg-copy-btn {
+    .rmsg-copy-btn,
+    .rmsg-read-btn {
         font-size: 11px;
         padding: 0;
         width: 20px;
@@ -2686,22 +3126,19 @@ mark.rlog-search-mark-current {
         border-width: 0 0 10px 10px;
     }
 
-    /* 两抽屉在移动端的内部间距与按钮区同档（基础规则里是桌面档） */
-    .rlog-more-drawer,
-    .rlog-filter-drawer {
+    /* 三个抽屉控件在移动端的内部间距与按钮区同档（基础规则里是桌面档） */
+    .rlog-more-controls,
+    .rlog-filter-controls {
         gap: 3px;
-    }
-    /* 筛选抽屉展开态在移动端取用整行宽度（基础规则给的是 560px 上限）；放不下时内部折行 */
-    .rlog-filter-drawer.expanded {
-        max-width: 100%;
-        flex: 1 1 auto;
-        min-width: 0;
     }
     .rlog-filter-chip {
         width: 22px;
         height: 22px;
         padding: 0;
         font-size: 12px;
+    }
+    #rlog-filter-drawer-reset-btn {
+        height: 22px;
     }
     .rlog-filter-chip svg {
         width: 16px;
@@ -2761,6 +3198,7 @@ mark.rlog-search-mark-current {
     /* 移动端按钮再小一号 */
     .rlog-read-jump-top-btn,
     .rlog-read-jump-bottom-btn,
+    .rlog-read-export-btn,
     .rlog-read-copy-btn,
     .rlog-read-close-btn,
     .rlog-read-format-btn {
@@ -2770,6 +3208,13 @@ mark.rlog-search-mark-current {
     }
     .rlog-read-close-btn {
         font-size: 12px;
+    }
+    .rlog-message-read-close-btn {
+        top: 8px;
+        right: 14px;
+        width: 22px;
+        height: 22px;
+        font-size: 15px;
     }
     .rlog-read-header-actions {
         gap: 3px;
@@ -2784,27 +3229,4 @@ mark.rlog-search-mark-current {
         width: min(236px, 90vw);
     }
 
-    /* ── 移动端全屏（偏好设置） ─────────────────────── */
-    /* 移动端全屏偏好：展开态铺满 100vw/100vh（:not(.rlog-window-collapsed) 限定只在展开态套高度）；
-       !important 用于压过 JS 写在行内样式里的 top/left/width/height */
-    #rlog-panel.rlog-mobile-fullscreen {
-        top: 0 !important;
-        left: 0 !important;
-        transform: none !important;
-        width: 100vw !important;
-        max-width: 100vw !important;
-        border-radius: 0 !important;
-    }
-    #rlog-panel.rlog-mobile-fullscreen:not(.rlog-window-collapsed) {
-        height: 100vh !important;
-        min-height: 100vh !important;
-        max-height: 100vh !important;
-    }
-    /* 移动端全屏：标题栏固定两行 —— 标题（含计数/指示器）留在第一行，按钮区整块独占第二行并靠右；
-       抽屉不自动展开、仍由用户手动操作。（用按钮区占满一行，而不是给标题加满行宽：
-       否则展开抽屉时那条看不见的拖拽区会自己占掉一整行，标题栏会多出空行） */
-    #rlog-panel.rlog-mobile-fullscreen .rlog-header-actions {
-        flex-basis: 100%;
-        justify-content: flex-end; /* 独占一行后按钮仍靠右，与「抽屉向左延伸、按钮不动」的排布一致 */
-    }
 }
