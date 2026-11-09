@@ -99,6 +99,9 @@ const RESPONSE_META_DISCLAIMER = '性能数据仅供参考';
 const RESPONSE_META_VALUE_MAX_CHARS = 60; /* Response 详情中可能较长原始值的单行显示上限 */
 const TOKEN_COUNT_PLACEHOLDER = '- tokens'; /* 无实际输出时的完整 token 文本，保持与数字 token 相同后缀 */
 const MESSAGE_READ_TOKEN_THRESHOLD = 800; /* 单条消息达到该 token 数时提供独立阅读入口 */
+const MOBILE_LAYOUT_HEIGHT_DELAY_MS = 200; /* 移动端高度变化合并窗口(ms)：避开地址栏/键盘连续过渡帧 */
+const MOBILE_KEYBOARD_RELEASE_GRACE_MS = 650; /* 移动端输入失焦后的释放宽限(ms)：等待虚拟键盘完成收起 */
+const MOBILE_LAYOUT_HEIGHT_TOLERANCE = 12; /* 移动端高度恢复容差(px)：避免动画尾帧反复重建布局 */
 
 /* Response 详情只采集白名单中的上游原始字段；规则按列表顺序决定展示顺序。
    新增字段时优先在这里补规则，不改各接口的正文解析或详情渲染。 */
@@ -423,6 +426,9 @@ let toggleBtn = null;
 
 /* boolean: 面板是否可见 */
 let isPanelVisible = false;
+
+/* number|null: 延迟注册点外关闭监听的定时器；面板关闭或缩成浮标时一并取消 */
+let panelOutsideCloseArmTimer = null;
 
 /* @type {boolean} 面板内容是否需要重建（数据/渲染设置变化时置 true，渲染完成后清 false）。
    面板隐藏时 DOM 保留，避免每次打开都全量重建造成卡顿。 */
@@ -4433,6 +4439,7 @@ function setPreference(key, value) {
     if (key === 'mobileFull') setPreferenceMobileFullBehavior();
     if (key === 'followStTheme') setPreferenceFollowStThemeBehavior();
     if (key === 'badgeDefault') setPreferenceBadgeDefaultBehavior();
+    if (key === 'clickOutside') schedulePanelOutsideCloseListener();
     if (key === 'quickReplyEntry') syncQuickReplyEntry();
     if (key === 'hideExtensionEntry') syncMenuEntryVisibility();
     return true;
@@ -4442,6 +4449,7 @@ function setPreference(key, value) {
 function setPreferenceMobileFullBehavior() {
     if (!isMobileViewport()) return;
     manualFullscreenOverride = preferences.mobileFull;
+    refreshMobilePanelLayoutForLayoutAction();
     syncFullscreenUI();
 }
 
@@ -4508,6 +4516,7 @@ function syncFullscreenUI() {
 /* 用户点击最大化/恢复：仅改写内存中的手动覆盖值，不修改偏好设置。 */
 function toggleFullscreen() {
     manualFullscreenOverride = !isFullscreenActive();
+    refreshMobilePanelLayoutForLayoutAction();
     syncFullscreenUI();
 }
 
@@ -6547,14 +6556,81 @@ let mobilePanelLayoutWidth = 0;
 let mobilePanelLayoutHeight = 0;
 /* boolean: 是否已有「记录列表活动控件可见性」检查排在下一帧 */
 let activeListControlVisibilityQueued = false;
+/* number: 合并移动端高度变化的定时器；0 = 没有待执行更新 */
+let mobileLayoutHeightSyncTimer = 0;
+/* number: 输入控件失焦后的键盘释放宽限截止时间；0 = 不在释放宽限内 */
+let mobileKeyboardReleaseUntil = 0;
 
 /* 移动端视口判定：与样式断点一致（唯一断点 768px） */
 function isMobileViewport() {
     return window.matchMedia('(max-width: 768px)').matches;
 }
 
-/* 移动端面板的普通上下限和全屏高度只在布局边界、横竖屏或宽度变化时重新采用视口高度；
-   单纯高度变化视为键盘或地址栏遮挡，不改变插件自身布局。 */
+/* 面板内可作为键盘输入目标的控件；计数序号是 contenteditable，也走同一套会话判断。 */
+function isMobileKeyboardEditable(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
+/* 读取影子根当前焦点，判断键盘会话是否仍位于 RRL 面板内。 */
+function hasFocusedMobilePanelEditable() {
+    const activeEl = panelShadowRoot ? panelShadowRoot.activeElement : null;
+    return !!(activeEl && panelEl && panelEl.contains(activeEl) && isMobileKeyboardEditable(activeEl));
+}
+
+/* 取键盘会话内新增输入时的事件目标；composedPath 可穿透影子根，返回真实输入元素。 */
+function getShadowEventTarget(event) {
+    return event && typeof event.composedPath === 'function'
+        ? event.composedPath()[0]
+        : event && event.target;
+}
+
+/* 清理待执行的高度更新；在布局断点切换或面板隐藏时避免旧任务晚到。 */
+function clearMobileLayoutHeightSync() {
+    if (!mobileLayoutHeightSyncTimer) return;
+    clearTimeout(mobileLayoutHeightSyncTimer);
+    mobileLayoutHeightSyncTimer = 0;
+}
+
+/* 结束移动端键盘会话的释放宽限，不改变当前高度基准。 */
+function resetMobileKeyboardSession() {
+    mobileKeyboardReleaseUntil = 0;
+    clearMobileLayoutHeightSync();
+}
+
+/* 移动端输入获得焦点：键盘尚未弹出时先采用当前真实高度，随后该会话内的高度缩减保持冻结。 */
+function handleMobileEditableFocusIn(event) {
+    const target = getShadowEventTarget(event);
+    if (!isMobileViewport() || !isMobileKeyboardEditable(target)) return;
+    if (!panelEl || !panelEl.contains(target)) return;
+    mobileKeyboardReleaseUntil = 0;
+    clearMobileLayoutHeightSync();
+    if (!mobilePanelLayoutHeight
+        || window.innerHeight >= mobilePanelLayoutHeight - MOBILE_LAYOUT_HEIGHT_TOLERANCE) {
+        refreshMobilePanelLayoutForLayoutAction();
+    }
+}
+
+/* 输入失焦后先等焦点落地：同组输入之间切换不释放；只剩非输入控件时才等待键盘收起。 */
+function handleMobileEditableFocusOut() {
+    requestAnimationFrame(() => {
+        if (!isMobileViewport() || hasFocusedMobilePanelEditable()) return;
+        mobileKeyboardReleaseUntil = Date.now() + MOBILE_KEYBOARD_RELEASE_GRACE_MS;
+        scheduleMobilePanelLayoutHeightSync();
+    });
+}
+
+/* 输入全部位于同一影子根，监听一次即可覆盖动态新增的搜索框、偏好数字框和计数编辑器。 */
+function installMobileKeyboardSessionTracking() {
+    if (!panelShadowRoot || panelShadowRoot.rlogKeyboardSessionBound) return;
+    panelShadowRoot.rlogKeyboardSessionBound = true;
+    panelShadowRoot.addEventListener('focusin', handleMobileEditableFocusIn, true);
+    panelShadowRoot.addEventListener('focusout', handleMobileEditableFocusOut, true);
+}
+
+/* 建立移动端面板的像素布局基准。普通上下限和全屏高度共用同一组变量；
+   键盘会话只在调用方决定更新时保持旧值。 */
 function syncMobilePanelLayoutMetrics(force = false) {
     if (!panelEl) return false;
     if (!isMobileViewport()) {
@@ -6568,14 +6644,56 @@ function syncMobilePanelLayoutMetrics(force = false) {
     }
 
     const width = Math.max(1, window.innerWidth);
-    if (!force && mobilePanelLayoutWidth === width) return false;
     const height = Math.max(1, window.innerHeight);
+    if (!force
+        && mobilePanelLayoutWidth === width
+        && Math.abs(mobilePanelLayoutHeight - height) <= 0.5) {
+        return false;
+    }
     panelEl.style.setProperty('--rlog-panel-layout-h', `${height}px`);
     panelEl.style.setProperty('--rlog-mobile-min-h', `${Math.round(height * 0.5)}px`);
     panelEl.style.setProperty('--rlog-mobile-max-h', `${Math.round(height * 0.75)}px`);
     mobilePanelLayoutWidth = width;
     mobilePanelLayoutHeight = height;
     return true;
+}
+
+/* 合并移动端高度变化并排除键盘会话内的缩减。输入仍聚焦时的增高视为键盘收起，
+   可以立刻建立新基准；失焦后则留出释放宽限，等虚拟键盘完成收起动画。 */
+function scheduleMobilePanelLayoutHeightSync(delay = MOBILE_LAYOUT_HEIGHT_DELAY_MS) {
+    clearMobileLayoutHeightSync();
+    mobileLayoutHeightSyncTimer = setTimeout(() => {
+        mobileLayoutHeightSyncTimer = 0;
+        if (!panelEl || !isMobileViewport()) return;
+
+        const height = Math.max(1, window.innerHeight);
+        const shrink = mobilePanelLayoutHeight - height;
+        const releasePending = Date.now() < mobileKeyboardReleaseUntil;
+        if (shrink > MOBILE_LAYOUT_HEIGHT_TOLERANCE && hasFocusedMobilePanelEditable()) {
+            scheduleActiveListControlVisibility();
+            return;
+        }
+        if (shrink > MOBILE_LAYOUT_HEIGHT_TOLERANCE && releasePending) {
+            scheduleMobilePanelLayoutHeightSync(
+                Math.max(0, mobileKeyboardReleaseUntil - Date.now()) + 20,
+            );
+            scheduleActiveListControlVisibility();
+            return;
+        }
+
+        const changed = syncMobilePanelLayoutMetrics(true);
+        if (!changed) return;
+        clampPanelGeometryAfterLayoutChange();
+        scheduleViewportSync();
+    }, Math.max(0, delay));
+}
+
+/* 用户明确切换全屏 / 普通布局时采用操作瞬间的真实高度，不等键盘释放宽限。 */
+function refreshMobilePanelLayoutForLayoutAction() {
+    if (!isMobileViewport()) return;
+    clearMobileLayoutHeightSync();
+    const changed = syncMobilePanelLayoutMetrics(true);
+    if (changed && isPanelVisible) scheduleViewportSync();
 }
 
 /* 横竖屏或跨断点后，只修正已经越出当前视口的手动拖拽/缩放几何；未手动改过尺寸时不写内联值。 */
@@ -6644,7 +6762,7 @@ function scheduleActiveListControlVisibility() {
     });
 }
 
-/* 移动端只把宽度变化视为布局变化；高度单独变化只做轻量的活动控件可见性兜底。
+/* 移动端宽度变化立即重建布局；高度变化先合并，键盘会话内缩减保持冻结。
    桌面端保留原有 resize 全量同步行为。 */
 function handleViewportResize() {
     if (!panelEl) return;
@@ -6653,18 +6771,21 @@ function handleViewportResize() {
     const widthChanged = mobile && window.innerWidth !== mobilePanelLayoutWidth;
 
     if (mobile && (widthChanged || !hadMobileLayout)) {
+        resetMobileKeyboardSession();
         syncMobilePanelLayoutMetrics(true);
         clampPanelGeometryAfterLayoutChange();
         scheduleViewportSync();
         return;
     }
     if (!mobile && hadMobileLayout) {
+        resetMobileKeyboardSession();
         syncMobilePanelLayoutMetrics();
         clampPanelGeometryAfterLayoutChange();
         scheduleViewportSync();
         return;
     }
     if (mobile) {
+        scheduleMobilePanelLayoutHeightSync();
         scheduleActiveListControlVisibility();
         return;
     }
@@ -8674,6 +8795,7 @@ function togglePanelWindow() {
         clearPanelAnimations();
         /* 与关闭面板一致：收起前趁布局有效把视口外正文卸载，展开时不必为它们付排版与绘制 */
         runBodyBandPass(panelEl.querySelector('#rlog-list'));
+        resetMobileKeyboardSession();
         panelEl.classList.add('rlog-window-collapsed');
         panelEl.style.display = 'none';
         if (badgeEl) {
@@ -8689,6 +8811,7 @@ function togglePanelWindow() {
         panelEl.classList.remove('rlog-window-collapsed');
         panelEl.style.display = 'flex';
         resetPanelToDefault();
+        refreshMobilePanelLayoutForLayoutAction();
         /* 折叠期间可能已有数据/渲染变化（新记录到达），恢复前先重建 DOM */
         if (panelContentDirty) {
             renderPanelContent();
@@ -8711,6 +8834,8 @@ function togglePanelWindow() {
         /* 重新展开后面板不会自己发 scroll 事件，主动跑一次带宽维护（与前一条打开路径一致） */
         runBodyBandPass(panelEl.querySelector('#rlog-list'));
     }
+    if (isPanelCollapsed) stopPanelOutsideCloseListener();
+    else schedulePanelOutsideCloseListener();
 }
 
 function addMenuEntry() {
@@ -8748,12 +8873,6 @@ function getQuickReplyEntryButtonEl() {
     if (!set?.dom) return null;
     return Array.from(set.dom.querySelectorAll('.qr--button'))
         .find(button => button.title === QUICK_REPLY_ENTRY_LABEL && button.isConnected) ?? null;
-}
-
-/* 点击原生 QR 入口时，不能被本插件的「点击面板外关闭」提前截断。 */
-function isQuickReplyEntryTarget(target) {
-    const set = window.quickReplyApi?.getSetByName(QUICK_REPLY_ENTRY_SET_NAME);
-    return !!(set?.dom?.isConnected && target instanceof Node && set.dom.contains(target));
 }
 
 /* 只把名称和内容都符合约定的集合当作插件自己的数据，避免误删同名用户集合。 */
@@ -9412,6 +9531,7 @@ function buildUI() {
     panelShadowRoot.appendChild(buildFaShimStyle());
     panelShadowRoot.appendChild(buildMinimalShimStyle());
     panelShadowRoot.appendChild(panelEl);
+    installMobileKeyboardSessionTracking();
     document.body.appendChild(shadowHostEl);
 
     /* 浮标：独立 light DOM host（#rlog-badge-host）+ 自己的 shadow root。
@@ -9619,24 +9739,6 @@ function buildUI() {
         });
     }
 
-    /* 全局点击监听：开启「点击面板外关闭」时，点在面板外就关面板。
-       影子内点击会重定向到 #rlog-shadow-host，故用 e.target === shadowHostEl ||
-       e.composedPath().includes(panelEl) 判定面板内；同时放行插件自己的菜单切换按钮，
-       否则用它打开面板的那次点击会立刻把面板关掉。 */
-    if (!document.rlogOutsideCloseListenerInstalled) {
-        document.rlogOutsideCloseListenerInstalled = true;
-        document.addEventListener('click', (e) => {
-            if (!preferences.clickOutside || !isPanelVisible) return;
-            /* 浮标态：点面板外不清除浮标（它是用户主动收起产生的入口），点击浮标本身由浮标自己处理 */
-            if (isPanelCollapsed) return;
-            if (toggleBtn && toggleBtn.contains(e.target)) return;
-            if (isQuickReplyEntryTarget(e.target)) return;
-            const insidePanel = e.target === shadowHostEl || e.composedPath().includes(panelEl);
-            if (insidePanel) return;
-            hidePanel();
-        });
-    }
-
     panelEl.querySelector('#rlog-close-btn').addEventListener('click', hidePanel);
 
     panelEl.querySelector('#rlog-minimize-btn').addEventListener('click', (e) => {
@@ -9786,6 +9888,13 @@ function buildUI() {
     /* 全屏默认状态只在此处按偏好 + 当前视口冻结一次；之后只受用户手动状态覆盖 */
     initFullscreenState();
     syncFullscreenUI();
+    /* 页面重新加载时浏览器可能先给出临时的初始高度：默认全屏再等一帧采用当前真实高度。 */
+    if (isFullscreenActive()) {
+        requestAnimationFrame(() => {
+            refreshMobilePanelLayoutForLayoutAction();
+            syncFullscreenUI();
+        });
+    }
     /* 极简模式：按偏好给影子宿主加/去类（触发 :host 极简规则） */
     updateMinimalClass();
     /* 「昼夜模式跟随 ST 主题」：开启时静默同步到 ST 当前主题并挂上主题变化监听（此刻不播动画） */
@@ -9850,6 +9959,15 @@ function buildUI() {
     if (window.visualViewport && !window.rlogVisualViewportResizeInstalled) {
         window.rlogVisualViewportResizeInstalled = true;
         window.visualViewport.addEventListener('resize', scheduleActiveListControlVisibility);
+    }
+    if (!window.rlogMobileLayoutFocusInstalled) {
+        window.rlogMobileLayoutFocusInstalled = true;
+        window.addEventListener('focus', () => {
+            if (isMobileViewport()) scheduleMobilePanelLayoutHeightSync();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && isMobileViewport()) scheduleMobilePanelLayoutHeightSync();
+        });
     }
 
     /* 安装来源识别监听（仅记录用户原生入口，不受总开关影响） */
@@ -9933,6 +10051,35 @@ function playThemeSwitchAnimation() {
     });
 }
 
+/* 面板打开期间监听真实用户的外部点击；关闭或缩成浮标后不再保留全局监听。 */
+function handlePanelOutsideClick(e) {
+    /* 程序化 click（如焦点保持、第三方内部触发）不是用户的新点击，不参与点外关闭 */
+    if (!e.isTrusted) return;
+    if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed) return;
+    const insidePanel = e.target === shadowHostEl || e.composedPath().includes(panelEl);
+    if (insidePanel) return;
+    hidePanel();
+}
+
+function stopPanelOutsideCloseListener() {
+    if (panelOutsideCloseArmTimer !== null) {
+        clearTimeout(panelOutsideCloseArmTimer);
+        panelOutsideCloseArmTimer = null;
+    }
+    document.removeEventListener('click', handlePanelOutsideClick);
+}
+
+/* 打开入口的 click 先完整冒泡，再在下一轮任务注册外部点击监听 */
+function schedulePanelOutsideCloseListener() {
+    stopPanelOutsideCloseListener();
+    if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed || !panelEl) return;
+    panelOutsideCloseArmTimer = setTimeout(() => {
+        panelOutsideCloseArmTimer = null;
+        if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed || !panelEl) return;
+        document.addEventListener('click', handlePanelOutsideClick);
+    }, 0);
+}
+
 function togglePanel() {
     isPanelVisible ? hidePanel() : showPanel();
 }
@@ -9959,7 +10106,9 @@ function showPanel() {
     if (preferences.badgeDefault) resetPanelToDefault();
     panelEl.style.display = 'flex';
     isPanelVisible = true;
-    /* 打开面板只同步当前全屏状态，不重新计算默认值 */
+    /* 打开面板采用当前视口高度，再同步现有全屏状态；默认值仍只在初始化时计算 */
+    resetMobileKeyboardSession();
+    refreshMobilePanelLayoutForLayoutAction();
     syncFullscreenUI();
     if (toggleBtn) toggleBtn.classList.add('active');
     /* 仅当数据/渲染设置变化时才重建 DOM；否则保留原有 DOM，避免大量展开消息时打开面板卡顿 */
@@ -9985,6 +10134,7 @@ function showPanel() {
     /* 重新显示面板不会触发 scroll 事件，主动跑一次带宽维护：
        按当前视口（含上面刚做过的回顶）补回需要的正文、把远处的卸载掉 */
     runBodyBandPass(panelEl.querySelector('#rlog-list'));
+    schedulePanelOutsideCloseListener();
 
     /* 面板显示后检查是否需要进行引导 */
     if (window.__RLogTour && typeof window.__RLogTour.check === 'function') {
@@ -9993,6 +10143,8 @@ function showPanel() {
 }
 
 function hidePanel() {
+    stopPanelOutsideCloseListener();
+    resetMobileKeyboardSession();
     /* 关闭面板时退出搜索模式 */
     resetSearchIfActive();
     /* 所有关闭面板入口（关闭按钮、菜单 / QR 切换、面板外点击等）统一退出全局搜索 */
