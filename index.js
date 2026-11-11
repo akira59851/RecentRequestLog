@@ -316,7 +316,7 @@ const PENDING_REPLY_KEEP_MS = 60 * 1000;
 /* number: 搜索输入防抖延迟(ms)，输入停止后过久再执行搜索 */
 const SEARCH_DEBOUNCE_MS = 120;
 
-/* 非 2xx 错误响应体读取上限（字节）：超过即停止读取，避免大错误页浪费 */
+/* 非 2xx 错误原因解析上限（字节）：原始响应仍完整保存，仅不再累积错误提取文本 */
 const MAX_ERROR_BODY_BYTES = 8192;
 
 /* 置底闪烁兜底定时（ms）：平滑滚动后 scrollend 事件未触发时的兜底等待 */
@@ -375,6 +375,8 @@ let simulateButtonIntent = null;
 let simulateButtonIntentSeq = 0;
 /* number|null: pointerup 后等待 click 处理的延迟清理定时器 */
 let simulateButtonIntentTimer = null;
+/* boolean: 模拟按钮外部点击与页面隐藏监听是否只随当前指针意图存在 */
+let simulateButtonIntentDismissalBound = false;
 
 /* Array: 抓取到的记录列表 */
 let records = [];
@@ -418,14 +420,14 @@ let badgeSuppressNextClick = false;
 /* boolean: ST 当前是否深色主题（浮标配色取其反：深色 ST → 浅色浮标），由 syncBadgeTheme() 维护 */
 let stThemeIsDark = false;
 
-/* MutationObserver|null: 监听 <html> 的 style 属性变化以感知 ST 主题切换（见 initBadgeThemeSync） */
+/* MutationObserver|null: 浮标显示期间监听 <html> 的 style 属性以同步反向配色 */
 let badgeThemeObserver = null;
 
 /* HTMLElement|null: 扩展菜单中的按钮 */
 let toggleBtn = null;
 
-/* boolean: 面板是否可见 */
-let isPanelVisible = false;
+/* boolean: 面板是否展开显示；浮标态和完全关闭态都为 false */
+let isPanelExpanded = false;
 
 /* number|null: 延迟注册点外关闭监听的定时器；面板关闭或缩成浮标时一并取消 */
 let panelOutsideCloseArmTimer = null;
@@ -437,10 +439,7 @@ let panelContentDirty = true;
 /* boolean: 是否为明亮模式（默认亮色；已有保存值会在初始化时覆盖） */
 let isLightTheme = true;
 
-/* boolean: 面板窗口是否折叠 */
-let isPanelCollapsed = false;
-
-/* boolean: 面板隐藏/折叠期间是否有新记录到达，恢复显示时需要回到列表顶部 */
+/* boolean: 面板隐藏期间是否有新记录到达，展开时需要回到列表顶部 */
 let pendingScrollToTop = false;
 
 /* boolean: 页面初始化时冻结的全屏默认状态；之后视口变化或偏好修改都不重新计算 */
@@ -476,6 +475,12 @@ let resizeStartX = 0;
 let resizeStartY = 0;
 let resizeStartW = 0;
 let resizeStartH = 0;
+/* boolean: 面板展开期间才挂载的整页拖动/缩放监听是否已挂载 */
+let panelPointerListenersBound = false;
+/* {bind:Function,unbind:Function}|null: 标题栏拖动全局监听的挂载与摘除流程 */
+let panelHeaderDragBinding = null;
+/* {bind:Function,unbind:Function}|null: 缩放全局监听的挂载与摘除流程 */
+let panelResizeBinding = null;
 
 /* Function|null: 原始 window.fetch 的引用 */
 let originalFetch = null;
@@ -533,8 +538,9 @@ function summarizeBodyDescriptor(descriptor) {
 let captureSeq = 0;
 
 /* 尚未挂载到记录的回复待办区（key: captureId）：{ startTime, firstTokenAt, streaming,
-   elapsedMs, httpStatus, upstreamMeta, upstreamMetaByPath, timer, expireTimer, status,
-   content, reasoning, failReason, time, reader, finished }，记录建成后由 consumePendingReply 消费。 */
+   elapsedMs, httpStatus, upstreamMeta, upstreamMetaByPath, rawResponseText, toolCalls, timer,
+   expireTimer, status, content, reasoning, failReason, time, reader, finished }，
+   记录建成后由 consumePendingReply 消费。 */
 const pendingReplies = new Map();
 
 /* string|null: 上一次记录的 messages 指纹，用于去重 */
@@ -632,8 +638,8 @@ let toggleCommandReady = false;
 /* Promise: QR 入口集合变更串行执行，避免快速切换偏好时创建/移除互相覆盖 */
 let quickReplyEntrySyncQueue = Promise.resolve();
 
-/* MutationObserver|null: 监听 <html> 的 style 属性变化，感知 ST 主题切换以同步面板主题
-   （仅「昼夜模式跟随 ST 主题」开启时挂载；浮标有自己独立的同名观察者，两者互不共用、互不影响） */
+/* MutationObserver|null: 面板展开且「昼夜模式跟随 ST 主题」开启时监听 <html> 的 style 属性；
+   浮标有自己独立的同名观察者，两者互不共用、互不影响 */
 let panelThemeObserver = null;
 
 /* @type {object|null} 当前搜索状态（同一时间仅一条记录可搜索）
@@ -653,6 +659,8 @@ let headerDrawerSwapClearFrame = 0;
 
 /* ResizeObserver|null: 让全局搜索的独立防误触层持续对齐搜索控件 */
 let globalSearchGuardObserver = null;
+/* boolean: 全局搜索抽屉展开期间，防误触观察器是否已连接到当前控件 */
+let globalSearchGuardObserverActive = false;
 
 /* number|null: 搜索输入 debounce 定时器 ID */
 let searchDebounceTimer = null;
@@ -880,9 +888,17 @@ function getMessageDisplayText(msg) {
     return msg && typeof msg.content === 'string' ? msg.content : '';
 }
 
-function getFullPromptText(record) {
-    return record.messages
-        .map((m) => `[${m.role}]\n${getMessageDisplayText(m)}`)
+function getFullRecordText(record) {
+    return getRecordDisplayEntries(record)
+        .map((msg) => {
+            const meta = msg.role === 'tool'
+                ? [msg.toolName, msg.toolCallId].filter(value => typeof value === 'string' && value)
+                : [];
+            const heading = meta.length > 0
+                ? `[${msg.role}] ${meta.join(' ')}`
+                : `[${msg.role}]`;
+            return `${heading}\n${getMessageDisplayText(msg)}`;
+        })
         .join('\n\n');
 }
 
@@ -936,6 +952,22 @@ function getRoleLabel(role) {
     return map[role] || role;
 }
 
+/* Response 后追加的 TOOL 条目与普通消息共用同一渲染结构。 */
+function getRecordToolEntries(record) {
+    return record && record.reply && Array.isArray(record.reply.toolEntries)
+        ? record.reply.toolEntries
+        : [];
+}
+
+/* 按实际记录顺序汇总请求消息、Response 与 TOOL；仅用于展示和导出。 */
+function getRecordDisplayEntries(record) {
+    if (!record) return [];
+    const entries = Array.isArray(record.messages) ? [...record.messages] : [];
+    if (record.reply) entries.push(record.reply);
+    entries.push(...getRecordToolEntries(record));
+    return entries;
+}
+
 /* 取消息开头预览文字：原样保留文本、换行转空格、JS 端截断 200 字符（视觉省略交给 CSS）
    @param {string} content @returns {string} */
 function getContentPreview(content) {
@@ -950,6 +982,7 @@ function getContentPreview(content) {
    tokenPrecise 为 true 表示使用了 ST 原生分词器，不显示 ~ 估算标记。 */
 function getMessageTokenText(msg) {
     if (msg && msg.role === 'response' && msg.hasOutput === false) return TOKEN_COUNT_PLACEHOLDER;
+    if (msg && msg.tokensIncludedInResponse === true) return TOKEN_COUNT_PLACEHOLDER;
     const tokenPrefix = msg && msg.tokenPrecise ? '' : '~';
     const tokens = msg && Number.isFinite(msg.tokens) ? msg.tokens : 0;
     return `${tokenPrefix}${tokens} tokens`;
@@ -1103,12 +1136,16 @@ function parseMessagesBody(messageList) {
         if (!isAiMessageObject(m)) continue;
         const { content, formattedContent } = splitMessageContent(m.content);
         if (content || formattedContent) {
+            const toolCallId = typeof m.tool_call_id === 'string' ? m.tool_call_id : '';
+            const toolName = typeof m.name === 'string' ? m.name : '';
             messages.push({
                 role: normalizeRole(m.role),
                 content,
                 tokens: 0,
                 collapsed: true,
                 ...(formattedContent !== content ? { formattedContent } : {}),
+                ...(toolCallId ? { toolCallId } : {}),
+                ...(toolName ? { toolName } : {}),
             });
         }
     }
@@ -3190,8 +3227,138 @@ function appendReplyText(entry, text, isReasoning) {
     if (changed && entry.firstTokenAt == null) entry.firstTokenAt = Date.now();
 }
 
+/* 按协议内部索引取工具调用临时对象；Map 的插入顺序就是最终 TOOL 条目顺序。 */
+function ensureReplyToolCall(entry, key) {
+    if (!(entry.toolCalls instanceof Map)) entry.toolCalls = new Map();
+    let call = entry.toolCalls.get(key);
+    if (!call) {
+        call = {
+            id: '',
+            name: '',
+            argumentsText: '',
+            argumentsValue: undefined,
+        };
+        entry.toolCalls.set(key, call);
+    }
+    return call;
+}
+
+/* 工具名称可能一次到齐，也可能分片；累计式完整值替换，重复片段跳过。 */
+function appendReplyToolName(entry, call, name) {
+    if (typeof name !== 'string' || !name) return;
+    const current = call.name || '';
+    if (!current) {
+        call.name = name;
+    } else if (name.startsWith(current) && name.length > current.length) {
+        call.name = name;
+    } else if (!current.startsWith(name) && !current.endsWith(name)) {
+        call.name = current + name;
+    }
+    if (entry.firstTokenAt == null) entry.firstTokenAt = Date.now();
+}
+
+/* 工具参数支持字符串分片与完整对象快照；对象到齐后覆盖旧的分片文本。 */
+function appendReplyToolArguments(entry, call, value) {
+    if (value == null) return;
+    if (typeof value === 'object') {
+        call.argumentsValue = value;
+        call.argumentsText = '';
+    } else if (typeof value === 'string' && value) {
+        const current = call.argumentsText || '';
+        call.argumentsValue = undefined;
+        if (!current) {
+            call.argumentsText = value;
+        } else if (value.startsWith(current) && value.length > current.length) {
+            call.argumentsText = value;
+        } else if (!current.startsWith(value) && !current.endsWith(value)) {
+            call.argumentsText = current + value;
+        }
+    } else {
+        return;
+    }
+    if (entry.firstTokenAt == null) entry.firstTokenAt = Date.now();
+}
+
+/* 读取 OpenAI 当前 tool_calls 或遗留 function_call；同一索引的并行调用分开累计。 */
+function collectOpenAiReplyToolCalls(entry, payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.tool_calls != null) {
+        const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls : [payload.tool_calls];
+        calls.forEach((item, fallbackIndex) => {
+            if (!item || typeof item !== 'object') return;
+            const callIndex = Number.isInteger(item.index) ? item.index : fallbackIndex;
+            const call = ensureReplyToolCall(entry, `openai:${callIndex}`);
+            if (typeof item.id === 'string' && item.id) call.id = item.id;
+            const fn = item.function && typeof item.function === 'object' ? item.function : null;
+            if (fn) {
+                appendReplyToolName(entry, call, fn.name);
+                appendReplyToolArguments(entry, call, fn.arguments);
+            }
+        });
+    }
+
+    const legacy = payload.function_call;
+    if (legacy && typeof legacy === 'object') {
+        const call = ensureReplyToolCall(entry, 'legacy:0');
+        appendReplyToolName(entry, call, legacy.name);
+        appendReplyToolArguments(entry, call, legacy.arguments);
+    }
+}
+
+/* 判断临时工具对象是否已有可展示数据，忽略只有索引或 ID 的空壳。 */
+function hasReplyToolOutput(replyData) {
+    if (!replyData || !(replyData.toolCalls instanceof Map)) return false;
+    for (const call of replyData.toolCalls.values()) {
+        if (call.name
+            || call.argumentsValue !== undefined
+            || (typeof call.argumentsText === 'string' && call.argumentsText.length > 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* 把工具调用临时对象转换为现有消息条目形状；协议索引和解析对象到此结束。 */
+function buildReplyToolEntries(replyData) {
+    if (!replyData || !(replyData.toolCalls instanceof Map)) return [];
+    const entries = [];
+    for (const call of replyData.toolCalls.values()) {
+        const hasArguments = call.argumentsValue !== undefined
+            || (typeof call.argumentsText === 'string' && call.argumentsText.length > 0);
+        if (!call.name && !hasArguments) continue;
+
+        let argumentsText = '';
+        if (call.argumentsValue !== undefined) {
+            try {
+                argumentsText = JSON.stringify(call.argumentsValue, null, 2);
+            } catch (e) {
+                argumentsText = String(call.argumentsValue);
+            }
+        } else if (call.argumentsText) {
+            try {
+                argumentsText = JSON.stringify(JSON.parse(call.argumentsText), null, 2);
+            } catch (e) {
+                argumentsText = call.argumentsText;
+            }
+        }
+
+        entries.push({
+            role: 'tool',
+            content: argumentsText,
+            tokens: 0,
+            tokenPrecise: false,
+            collapsed: true,
+            tokensIncludedInResponse: true,
+            ...(call.name ? { toolName: call.name } : {}),
+            ...(call.id ? { toolCallId: call.id } : {}),
+        });
+    }
+    return entries;
+}
+
 /* 从单个 JSON chunk 提取正文/思考增量（兼容 OpenAI delta/message/text + reasoning_content、
-   Anthropic delta.text/delta.thinking/content 数组、Gemini candidates[0].content.parts）
+   Anthropic delta.text/delta.thinking/content 数组、Gemini candidates[0].content.parts；
+   同时累计标准工具调用，工具调用在终态才转换为 TOOL 条目）
    @param {object} chunk @param {number} captureId */
 function extractReplyFromChunk(chunk, captureId) {
     const entry = pendingReplies.get(captureId);
@@ -3207,21 +3374,40 @@ function extractReplyFromChunk(chunk, captureId) {
             if (typeof delta.reasoning === 'string') appendReplyText(entry, delta.reasoning, true);
             if (typeof delta.content === 'string') appendReplyText(entry, delta.content, false);
             if (typeof delta.text === 'string') appendReplyText(entry, delta.text, false);
+            collectOpenAiReplyToolCalls(entry, delta);
         }
         const msg = c0 && typeof c0.message === 'object' ? c0.message : null;
         if (msg) {
             if (typeof msg.reasoning_content === 'string') appendReplyText(entry, msg.reasoning_content, true);
             if (typeof msg.reasoning === 'string') appendReplyText(entry, msg.reasoning, true);
             if (typeof msg.content === 'string') appendReplyText(entry, msg.content, false);
+            collectOpenAiReplyToolCalls(entry, msg);
         }
         if (typeof c0.text === 'string') appendReplyText(entry, c0.text, false);
         return;
     }
 
-    /* Anthropic 流式（delta.thinking / delta.text） */
+    /* Anthropic 工具调用的内容块起点。 */
+    if (chunk.content_block && typeof chunk.content_block === 'object'
+        && chunk.content_block.type === 'tool_use') {
+        const blockIndex = Number.isInteger(chunk.index) ? chunk.index : 0;
+        const call = ensureReplyToolCall(entry, `anthropic:${blockIndex}`);
+        if (typeof chunk.content_block.id === 'string' && chunk.content_block.id) {
+            call.id = chunk.content_block.id;
+        }
+        appendReplyToolName(entry, call, chunk.content_block.name);
+        appendReplyToolArguments(entry, call, chunk.content_block.input);
+    }
+
+    /* Anthropic 流式（delta.thinking / delta.text / input_json_delta） */
     if (chunk.delta && typeof chunk.delta === 'object') {
         if (typeof chunk.delta.thinking === 'string') appendReplyText(entry, chunk.delta.thinking, true);
         if (typeof chunk.delta.text === 'string') appendReplyText(entry, chunk.delta.text, false);
+        if (chunk.delta.type === 'input_json_delta' && typeof chunk.delta.partial_json === 'string') {
+            const blockIndex = Number.isInteger(chunk.index) ? chunk.index : 0;
+            const call = ensureReplyToolCall(entry, `anthropic:${blockIndex}`);
+            appendReplyToolArguments(entry, call, chunk.delta.partial_json);
+        }
         return;
     }
 
@@ -3229,22 +3415,33 @@ function extractReplyFromChunk(chunk, captureId) {
     if (Array.isArray(chunk.candidates) && chunk.candidates[0]) {
         const parts = chunk.candidates[0].content && chunk.candidates[0].content.parts;
         if (Array.isArray(parts)) {
-            for (const part of parts) {
+            parts.forEach((part, partIndex) => {
                 if (part && typeof part.text === 'string' && part.text.length > 0) {
                     appendReplyText(entry, part.text, !!part.thought);
                 }
-            }
+                if (part && part.functionCall && typeof part.functionCall === 'object') {
+                    const call = ensureReplyToolCall(entry, `gemini:0:${partIndex}`);
+                    appendReplyToolName(entry, call, part.functionCall.name);
+                    appendReplyToolArguments(entry, call, part.functionCall.args);
+                }
+            });
         }
         return;
     }
 
     /* Anthropic 非流式（content 数组） */
     if (Array.isArray(chunk.content)) {
-        for (const part of chunk.content) {
-            if (!part || typeof part !== 'object') continue;
+        chunk.content.forEach((part, partIndex) => {
+            if (!part || typeof part !== 'object') return;
             if (part.type === 'text' && typeof part.text === 'string') appendReplyText(entry, part.text, false);
             if (part.type === 'thinking' && typeof part.thinking === 'string') appendReplyText(entry, part.thinking, true);
-        }
+            if (part.type === 'tool_use') {
+                const call = ensureReplyToolCall(entry, `anthropic:${partIndex}`);
+                if (typeof part.id === 'string' && part.id) call.id = part.id;
+                appendReplyToolName(entry, call, part.name);
+                appendReplyToolArguments(entry, call, part.input);
+            }
+        });
     }
 }
 
@@ -3327,11 +3524,18 @@ function readResponseBody(clone, captureId, hintMode = null) {
             const cur = pendingReplies.get(captureId);
             if (!cur || cur.finished) return;
             if (done) {
+                const tail = decoder.decode();
+                if (tail) {
+                    buffer += tail;
+                    cur.rawResponseText += tail;
+                }
                 finalizeDone();
                 return;
             }
             sawBytes = true;
-            buffer += decoder.decode(value, { stream: true });
+            const decoded = decoder.decode(value, { stream: true });
+            buffer += decoded;
+            cur.rawResponseText += decoded;
             /* 未确定模式时按内容识别：出现 data: 行即视为 SSE */
             if (!mode && /^data:|\ndata:/.test(buffer)) {
                 mode = 'sse';
@@ -3398,6 +3602,7 @@ function readErrorResponseBody(response, captureId, baseReason) {
     if (entry) entry.reader = reader; /* 交给 abortPendingReply 统一释放 */
     const decoder = new TextDecoder();
     let text = '';
+    let reserveFullReason = true;
 
     function done() {
         let reason = baseReason;
@@ -3417,13 +3622,23 @@ function readErrorResponseBody(response, captureId, baseReason) {
             const cur = pendingReplies.get(captureId);
             if (!cur || cur.finished) return;
             if (isDone) {
+                const tail = decoder.decode();
+                if (tail) {
+                    cur.rawResponseText += tail;
+                    if (reserveFullReason) text += tail;
+                }
                 done();
                 return;
             }
-            text += decoder.decode(value, { stream: true });
-            if (text.length >= MAX_ERROR_BODY_BYTES) {
-                done(); /* 超过上限：用已读内容提取，不再继续读 */
-                return;
+            const decoded = decoder.decode(value, { stream: true });
+            cur.rawResponseText += decoded;
+            if (reserveFullReason) {
+                text += decoded;
+                if (text.length >= MAX_ERROR_BODY_BYTES) {
+                    /* 只限制错误原因解析量，原始响应仍继续完整保存 */
+                    text = text.slice(0, MAX_ERROR_BODY_BYTES);
+                    reserveFullReason = false;
+                }
             }
             pump();
         }).catch(() => {
@@ -3454,6 +3669,8 @@ function captureResponseForRequest(fetchPromise, requestUrl, captureId) {
         httpStatus: null,
         upstreamMeta: [],
         upstreamMetaByPath: new Map(),
+        rawResponseText: '',
+        toolCalls: new Map(),
         timer: null,
         expireTimer: null,
         status: null,
@@ -3517,13 +3734,14 @@ function finalizeReply(captureId, status, failReason) {
         try { Promise.resolve(entry.reader.cancel()).catch(() => { /* ignore */ }); } catch (e) { /* ignore */ }
     }
 
-    /* 正常结束但正文为空/过短 → 视为失败（思考不计入长度判定） */
+    /* 正常结束但正文为空/过短 → 视为失败（思考不计入长度判定）；工具调用属于有效输出。 */
     if (status === 'succeed') {
         const content = (entry.content || '').trim();
-        if (!content) {
+        const hasToolCalls = hasReplyToolOutput(entry);
+        if (!content && !hasToolCalls) {
             status = 'fail';
             failReason = 'empty reply';
-        } else if (content.length <= 10) {
+        } else if (!hasToolCalls && content.length <= 10) {
             status = 'fail';
             failReason = 'reply too short';
         }
@@ -3582,13 +3800,14 @@ function findRecordByCaptureId(captureId) {
     return tourPendingRecords.find(r => r.id === captureId) || null;
 }
 
-/* 把终态回复挂到记录（record.reply）并异步算 token；只追加 Response 子消息、不重建列表，
-   阅读位置与搜索状态不受影响。
+/* 把终态回复挂到记录（record.reply）并异步算 token；Response 与 TOOL 条目共用消息形状，
+   只追加输出条目、不重建列表，阅读位置与搜索状态不受影响。
    @param {object} record @param {object} replyData @param {boolean} [skipRender=false] */
 function attachReplyToRecord(record, replyData, skipRender = false) {
     if (!record || record.reply) return;
     const outputParts = getReplyOutputParts(replyData);
-    const hasOutput = outputParts.length > 0;
+    const toolEntries = buildReplyToolEntries(replyData);
+    const hasOutput = outputParts.length > 0 || toolEntries.length > 0;
     /* Fail/Timeout 时把失败原因写进回复内容：已有内容（如中止保留的半截回复）末尾空一行追加； */
     /* 内容为空则直接写原因。移动端没有悬停，这样展开/预览/复制/搜索都能直接看到报错。 */
     let content = buildReplyContent(replyData);
@@ -3611,16 +3830,27 @@ function attachReplyToRecord(record, replyData, skipRender = false) {
         upstreamMeta: Array.isArray(replyData.upstreamMeta)
             ? replyData.upstreamMeta.map((field) => ({ ...field }))
             : [],
+        toolEntries,
         simulated: !!record.simulated,
         hasOutput,
     };
+    record.rawResponseText = typeof replyData.rawResponseText === 'string'
+        ? replyData.rawResponseText
+        : '';
     /* Response 也属于搜索正文：已有全局结果时由用户主动更新，不自动追加当前结果。 */
     markGlobalSearchDataChanged();
     /* 异步只统计实际生成内容；失败原因仍保留在正文中展示，但不计入 token */
     if (hasOutput) {
-        computeTokensForReplyOutput(outputParts, record.modelName || '').then((result) => {
-            record.reply.tokens = result.tokens;
-            record.reply.tokenPrecise = result.tokenPrecise;
+        Promise.all([
+            computeTokensForReplyOutput(outputParts, record.modelName || ''),
+            toolEntries.length > 0
+                ? computeTokensForMessages(toolEntries, record.modelName || '')
+                : Promise.resolve(),
+        ]).then(([result]) => {
+            const toolTokens = getTotalTokens(toolEntries);
+            const toolPrecise = toolEntries.every(entry => entry.tokenPrecise === true);
+            record.reply.tokens = result.tokens + toolTokens;
+            record.reply.tokenPrecise = result.tokenPrecise && toolPrecise;
             updateReplyMetaInDom(record);
         }).catch(() => { /* 静默 */ });
     }
@@ -3629,12 +3859,12 @@ function attachReplyToRecord(record, replyData, skipRender = false) {
     queueSourceCorrection(record);
 }
 
-/* 回复到达：只把 Response 子消息追加到该记录末尾并更新标题栏状态，不重建列表（阅读位置、
-   内容区滚动、搜索状态保持不变）；面板不可见/记录不在 DOM/引导期间只置脏标记。
+/* 回复到达：把 Response 与 TOOL 条目追加到记录末尾并更新标题栏状态，不重建列表（阅读位置、
+   内容区滚动、搜索状态保持不变）；面板未展开/记录不在 DOM/引导期间只置脏标记。
    @param {object} record */
 function appendReplyToRecordDom(record) {
     panelContentDirty = true;
-    if (!panelEl || !isPanelVisible || tourActive) return;
+    if (!panelEl || !isPanelExpanded || tourActive) return;
     const listEl = panelEl.querySelector('#rlog-list');
     const recordEl = listEl ? listEl.querySelector(`.rlog-record[data-record-index="${records.indexOf(record)}"]`) : null;
     const bodyEl = recordEl ? recordEl.querySelector('.rlog-record-body') : null;
@@ -3642,17 +3872,20 @@ function appendReplyToRecordDom(record) {
 
     const idx = Number(recordEl.dataset.recordIndex);
     const replyMsgIdx = record.messages.length;
-    /* 回复子消息被角色筛选隐藏时不追加子消息 DOM（数据已写入 record.reply，
-       恢复显示后由下次渲染自然带出）；标题栏状态标记仍照常更新 */
-    if (isMessageVisible(record.reply)) {
-        /* 幂等：已追加过则跳过（避免重复触发时插两条）；
-           折叠记录的正文还没生成，此时不追加子消息 DOM（回复数据已在 record.reply 里，
-           下次展开由 ensureRecordBody() 一并带出），只更新标题栏状态标记 */
-        if (bodyEl.dataset.bodyBuilt === '1' && !bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`)) {
-            bodyEl.insertAdjacentHTML('beforeend', buildMessageHtml(record.reply, idx, replyMsgIdx));
-            const replyItemEl = bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${replyMsgIdx}"]`);
-            if (replyItemEl) bindMsgItemEvents(replyItemEl);
-        }
+    const replyEntries = record.reply
+        ? [record.reply, ...getRecordToolEntries(record)]
+        : [];
+    /* 被角色筛选隐藏的条目不追加 DOM，恢复显示后由下次渲染自然带出；
+       折叠记录的正文尚未生成时只更新标题栏状态标记。 */
+    if (bodyEl.dataset.bodyBuilt === '1') {
+        replyEntries.forEach((msg, offset) => {
+            const msgIdx = replyMsgIdx + offset;
+            if (!isMessageVisible(msg)) return;
+            if (bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${msgIdx}"]`)) return;
+            bodyEl.insertAdjacentHTML('beforeend', buildMessageHtml(msg, idx, msgIdx));
+            const itemEl = bodyEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${msgIdx}"]`);
+            if (itemEl) bindMsgItemEvents(itemEl);
+        });
     }
 
     /* 标题栏回复状态标记（仅折叠时显示，展开时 CSS 隐藏）：不存在则补上，存在则刷新内容 */
@@ -3672,11 +3905,11 @@ function appendReplyToRecordDom(record) {
 }
 
 /* 回复 token 计算完成后更新 token 数字与 Response 的 TPS，不重建列表。
-   记录不在 DOM 时（面板关闭/引导中）由下次渲染自然带上正确数字。
+   记录不在 DOM 时（面板隐藏/引导中）由下次渲染自然带上正确数字。
    @param {object} record 目标记录 */
 function updateReplyMetaInDom(record) {
     panelContentDirty = true;
-    if (!panelEl || !isPanelVisible) return;
+    if (!panelEl || !isPanelExpanded) return;
     const idx = records.indexOf(record);
     if (idx < 0) return;
     const listEl = panelEl.querySelector('#rlog-list');
@@ -3696,6 +3929,15 @@ function updateReplyMetaInDom(record) {
     if (readBtn && reply) {
         readBtn.hidden = !shouldOfferMessageRead(reply);
     }
+    getRecordToolEntries(record).forEach((toolEntry, toolIdx) => {
+        const msgIdx = record.messages.length + 1 + toolIdx;
+        const toolItemEl = listEl.querySelector(`.rmsg-item[data-record="${idx}"][data-msg="${msgIdx}"]`);
+        if (!toolItemEl) return;
+        const toolTokensEl = toolItemEl.querySelector('.rmsg-tokens');
+        if (toolTokensEl) toolTokensEl.textContent = getMessageTokenText(toolEntry);
+        const toolReadBtn = toolItemEl.querySelector('.rmsg-read-btn');
+        if (toolReadBtn) toolReadBtn.hidden = !shouldOfferMessageRead(toolEntry);
+    });
 }
 
 /* ── 数据管理 ─────────────────────────── */
@@ -3765,11 +4007,12 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
         modelName: modelName || '未知模型',
         messages,
         promptTokens: getTotalTokens(messages), /* 与 ST 提示词预算一致的逐条消息份额合计 */
-        rawBody: rawBody || null,   /* 原始请求体 JSON 对象（「查看全文」原始格式用） */
+        rawBody: rawBody || null,   /* 原始请求体 JSON 对象（「查看全文」JSON 格式第一块） */
+        rawResponseText: '',         /* 原始响应正文；回复到达后写入，不参与展示解析 */
         collapsed: true,
         pinned: false,                /* 临时置顶标记：不占用普通记录上限，刷新即重置 */
         id: captureId != null ? captureId : null, /* 请求捕获编号，回复挂载用 */
-        reply: null,                 /* 回复内容（独立存储，不计入请求消息/查看全文） */
+        reply: null,                 /* 回复内容（独立存储；查看全文按实际顺序追加） */
     };
 
     /* 模拟记录：没有真实回复，直接在标题栏标一个 simulated 状态标签 */
@@ -3811,30 +4054,27 @@ function addRecord(characterName, messages, source, modelName, rawBody, captureI
     markGlobalSearchDataChanged();
 
     panelContentDirty = true;
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         const listEl = panelEl.querySelector('#rlog-list');
         const prevScrollTop = listEl ? listEl.scrollTop : 0;
         renderPanelContent();
-        if (!isPanelCollapsed) {
-            if (!filterActive || newRecordVisible) {
-                /* 面板完全展开可见时：定位到新记录自身（置顶记录可能在其上方），并闪烁新记录 */
-                const newRecordEl = getRecordElByIndex(0);
-                if (newRecordEl) {
-                    scrollToRecordEl(newRecordEl);
-                    flashTopHint(newRecordEl);
-                } else {
-                    if (listEl) listEl.scrollTop = 0;
-                    flashTopHint();
-                }
-            } else if (listEl) {
-                /* 新记录被筛选隐藏：保持原阅读位置 */
-                listEl.scrollTop = prevScrollTop;
+        if (!filterActive || newRecordVisible) {
+            /* 面板展开时：定位到新记录自身（置顶记录可能在其上方），并闪烁新记录 */
+            const newRecordEl = getRecordElByIndex(0);
+            if (newRecordEl) {
+                scrollToRecordEl(newRecordEl);
+                flashTopHint(newRecordEl);
+            } else {
+                if (listEl) listEl.scrollTop = 0;
+                flashTopHint();
             }
+        } else if (listEl) {
+            /* 新记录被筛选隐藏：保持原阅读位置 */
+            listEl.scrollTop = prevScrollTop;
         }
     }
-    /* 面板未处于「完全展开可见」状态时（窗口折叠/完全关闭）留待恢复显示后回顶
-       （见 togglePanelWindow / showPanel）；新记录被筛选隐藏时也不置位，恢复后保持原位置 */
-    if (!(panelEl && isPanelVisible && !isPanelCollapsed) && (!filterActive || newRecordVisible)) {
+    /* 面板隐藏时留待展开后回顶；新记录被筛选隐藏时保持原位置 */
+    if (!(panelEl && isPanelExpanded) && (!filterActive || newRecordVisible)) {
         pendingScrollToTop = true;
     }
 
@@ -3850,7 +4090,7 @@ function clearAllRecords() {
         return false;
     });
     panelContentDirty = true;
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         renderPanelContent();
     }
 }
@@ -4119,7 +4359,7 @@ function setMasterEnabled(enabled) {
     persistPluginSettings();
     updateMasterToggleUI();
     
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         /* 如果当前列表为空且面板可见，立即刷新空白提示文案 */
         if (records.length === 0) {
             panelContentDirty = true;
@@ -4174,7 +4414,7 @@ function toggleContentPreview() {
     updatePreviewToggleUI();
     /* 预览开关影响每条消息的渲染内容，需要重建 DOM */
     panelContentDirty = true;
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         renderPanelContent();
     }
 }
@@ -4457,27 +4697,20 @@ function setPreferenceMobileFullBehavior() {
    现有昼/夜动画切换）；关闭→把当前主题落盘一次（记住它），此后 ST 变化不再影响面板。 */
 function setPreferenceFollowStThemeBehavior() {
     if (preferences.followStTheme) {
-        initPanelThemeFollow(true);
+        activatePanelThemeFollow(true);
     } else {
+        deactivatePanelThemeFollow();
         saveTheme(isLightTheme);
     }
 }
 
-/* 应用「浮标默认入口」偏好切换后的即时行为（开启/关闭的边界处理）。
-   - 开启：面板隐藏时立即显示浮标（badgePos 为空则用右上默认位置）。
-   - 关闭：若浮标当前是因「折叠」显示（isPanelCollapsed）则保留；否则隐藏。 */
+/* 应用「浮标默认入口」偏好切换后的即时行为：面板隐藏时同步浮标显隐，展开时保持隐藏。 */
 function setPreferenceBadgeDefaultBehavior() {
-    if (!badgeEl) return;
-    if (preferences.badgeDefault) {
-        if (!isPanelVisible) {
-            if (!badgePos) badgePos = getDefaultBadgePos();
-            else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
-            badgeEl.style.left = badgePos.left + 'px';
-            badgeEl.style.top = badgePos.top + 'px';
-            setBadgeActive(true);
-        }
-    } else {
-        if (!isPanelCollapsed) setBadgeActive(false);
+    if (!badgeEl || isPanelExpanded) return;
+    if (preferences.badgeDefault) showBadgeAtStoredPosition();
+    else {
+        setBadgeActive(false);
+        syncViewportListenerLifecycle();
     }
 }
 
@@ -4510,7 +4743,7 @@ function syncFullscreenUI() {
     }
 
     /* 面板尺寸变了 → 重测吸顶并让正文带宽维护按新几何恢复/卸载；面板隐藏时等打开流程统一处理 */
-    if (changed && isPanelVisible) scheduleViewportSync();
+    if (changed && isPanelExpanded) schedulePanelViewportSync();
 }
 
 /* 用户点击最大化/恢复：仅改写内存中的手动覆盖值，不修改偏好设置。 */
@@ -4604,18 +4837,29 @@ function syncPanelThemeToSt(animate) {
     /* 跟随时不写主题存储：「记住当前主题」只在关闭开关那一下执行一次 */
     applyTheme();
     updateThemeButtonIcon();
-    if (animate && isPanelVisible) playThemeSwitchAnimation();
+    if (animate && isPanelExpanded) playThemeSwitchAnimation();
 }
 
-/* 初始化「昼夜模式跟随 ST 主题」：先静默同步一次，再挂 <html> style 属性监听（与浮标同一挂点，
-   ST 没有主题变化事件）；挂点将来失效只表现为不再自动跟随。观察者只挂一次。
-   @param {boolean} animate 首次同步是否允许播动画（初始化传 false） */
-function initPanelThemeFollow(animate) {
-    if (!preferences.followStTheme) return;
+/* 面板展开且跟随偏好开启时同步当前主题，并监听 <html> style 属性（ST 没有主题变化事件）。
+   重新打开时先补同步关闭期间错过的变化，再订阅后续变化；挂点失效只表现为不再自动跟随。
+   @param {boolean} animate 首次补齐时是否允许播动画（打开流程传 false） */
+function activatePanelThemeFollow(animate) {
+    if (!preferences.followStTheme || !isPanelExpanded) return;
     syncPanelThemeToSt(animate);
-    if (panelThemeObserver) return;
-    panelThemeObserver = new MutationObserver(() => syncPanelThemeToSt(true));
+    if (!panelThemeObserver) {
+        panelThemeObserver = new MutationObserver(() => {
+            if (!preferences.followStTheme || !isPanelExpanded) return;
+            syncPanelThemeToSt(true);
+        });
+    }
     panelThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+}
+
+/* 面板隐藏或关闭跟随偏好时摘除主题观察器，重新展开时再恢复。 */
+function deactivatePanelThemeFollow() {
+    if (!panelThemeObserver) return;
+    panelThemeObserver.disconnect();
+    panelThemeObserver = null;
 }
 
 /* 从 ST 扩展设置加载用户设定的最大记录数（无保存值或值非法时返回默认值） */
@@ -4646,7 +4890,7 @@ function setMaxRecords(newMax) {
     updateHeaderTitle();
     panelContentDirty = true;
 
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         renderPanelContent();
     }
 
@@ -4856,6 +5100,17 @@ function findMatchesInRecordData(record, keyword) {
         addContentMatches(getMessageDisplayText(record.reply), record.messages.length,
             normalizedKeyword, lowerKeyword, matches, plainScan);
     }
+    getRecordToolEntries(record).forEach((toolEntry, toolIdx) => {
+        if (!isMessageVisible(toolEntry)) return;
+        addContentMatches(
+            getMessageDisplayText(toolEntry),
+            record.messages.length + 1 + toolIdx,
+            normalizedKeyword,
+            lowerKeyword,
+            matches,
+            plainScan,
+        );
+    });
 
     return matches;
 }
@@ -6053,7 +6308,8 @@ function matchesFilter(record) {
     const sourceKey = record.source && record.source.type === 'native' ? 'native' : 'plugin';
     if (!filterState.source[sourceKey]) return false;
     const hasVisibleMessage = record.messages.some(isMessageVisible)
-        || (record.reply ? isMessageVisible(record.reply) : false);
+        || (record.reply ? isMessageVisible(record.reply) : false)
+        || getRecordToolEntries(record).some(isMessageVisible);
     if (!hasVisibleMessage) return false;
     const modelKey = getModelFilterGroup(record.modelName);
     if (!filterState.model[modelKey]) return false;
@@ -6194,7 +6450,7 @@ function toggleFilterChip(group, value) {
     panelContentDirty = true;
     /* 「筛选状态持久化」开启时立即落盘 */
     if (preferences.filterPersist) saveFilterState();
-    if (panelEl && isPanelVisible) renderPanelContent();
+    if (panelEl && isPanelExpanded) renderPanelContent();
 }
 
 /* 重置全部筛选为「全开」并刷新列表
@@ -6207,7 +6463,7 @@ function resetFilters(persist = true) {
     updateFilterIndicator();
     panelContentDirty = true;
     if (persist && preferences.filterPersist) saveFilterState();
-    if (panelEl && isPanelVisible) renderPanelContent();
+    if (panelEl && isPanelExpanded) renderPanelContent();
 }
 
 /* ── 渲染与 HTML 构建 ──────────────────── */
@@ -6228,10 +6484,10 @@ function refreshRecordSourceDom(record, prevSourceType) {
     const membershipChanged = isFilterActive() && !!prevSourceType && prevSourceType !== newType
         && !filterState.source[newType];
     if (membershipChanged) {
-        if (panelEl && isPanelVisible && !tourActive) renderPanelContent();
+        if (panelEl && isPanelExpanded && !tourActive) renderPanelContent();
         return;
     }
-    if (!panelEl || !isPanelVisible || tourActive) return;
+    if (!panelEl || !isPanelExpanded || tourActive) return;
 
     const idx = records.indexOf(record);
     const listEl = idx >= 0 ? panelEl.querySelector('#rlog-list') : null;
@@ -6263,17 +6519,24 @@ function updateHeaderTitle() {
 function buildMessageHtml(msg, recordIdx, msgIdx) {
     const roleClass = getRoleClass(msg.role);
     const roleLabel = getRoleLabel(msg.role);
+    const toolNameHtml = msg.role === 'tool' && typeof msg.toolName === 'string' && msg.toolName.trim()
+        ? `<span class="rmsg-tool-name" title="${escapeHtml(msg.toolName)}">${escapeHtml(msg.toolName)}</span>`
+        : '';
+    const toolCallIdHtml = msg.role === 'tool' && typeof msg.toolCallId === 'string' && msg.toolCallId.trim()
+        ? `<span class="rmsg-tool-id" title="${escapeHtml(msg.toolCallId)}">${escapeHtml(msg.toolCallId)}</span>`
+        : '';
     const collapsedClass = msg.collapsed ? 'collapsed' : 'expanded';
     const tokenText = getMessageTokenText(msg);
     const displayText = getMessageDisplayText(msg);
     const readBtnHidden = shouldOfferMessageRead(msg) ? '' : ' hidden';
-    /* Response 固定显示性能指标，不显示内容预览；其它角色仍跟随预览开关 */
+    /* Response 固定显示性能指标，TOOL 固定显示名称与 ID；两者都不显示正文预览。 */
     const showPreview = forcePreviewState !== null ? forcePreviewState : contentPreviewEnabled;
-    const previewHtml = msg.role === 'response'
-        ? buildResponseMetaHtml(msg, recordIdx, msgIdx)
-        : (showPreview
-            ? `<span class="rmsg-preview-text" title="${escapeHtml(displayText.slice(0, 200))}">${escapeHtml(getContentPreview(displayText))}</span>`
-            : '');
+    let previewHtml = '';
+    if (msg.role === 'response') {
+        previewHtml = buildResponseMetaHtml(msg, recordIdx, msgIdx);
+    } else if (msg.role !== 'tool' && showPreview) {
+        previewHtml = `<span class="rmsg-preview-text" title="${escapeHtml(displayText.slice(0, 200))}">${escapeHtml(getContentPreview(displayText))}</span>`;
+    }
     /* 折叠消息不生成正文：正文要留到展开时由 ensureMessageContent() 补建，否则每次整表重建
        都要把全部记录（含折叠部分）的提示词正文重新拼串并解析一遍。
        <pre> 后垫一个换行：解析器吞掉的是它，正文（含开头空行）原样显示 */
@@ -6283,6 +6546,8 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
             <div class="rmsg-header">
                 <span class="rmsg-expand-icon"><i class="fa-solid fa-chevron-right"></i></span>
                 <span class="rmsg-role-badge ${roleClass}">${escapeHtml(roleLabel)}</span>
+                ${toolNameHtml}
+                ${toolCallIdHtml}
                 ${previewHtml}
                 <span class="rmsg-tokens">${tokenText}</span>
                 <button class="rmsg-read-btn" data-record="${recordIdx}" data-msg="${msgIdx}" title="查看消息" aria-label="查看此消息全文"${readBtnHidden}>
@@ -6297,19 +6562,24 @@ function buildMessageHtml(msg, recordIdx, msgIdx) {
     `;
 }
 
-/* 记录正文（可见子消息 + 回复）的 HTML 拼装：整表渲染与折叠记录的按需补建共用。
+/* 记录正文（可见子消息 + Response + TOOL）的 HTML 拼装：整表渲染与折叠记录的按需补建共用。
    角色筛选按子消息逐条过滤：只拼可见子消息，data-msg 仍写真实索引；
-   回复作为最后一条伪消息（data-msg = messages.length），与其他子消息同形态。
+   Response 位于 messages.length，TOOL 从 messages.length + 1 起顺序编号。
    @param {object} rec @param {number} idx @returns {string} */
 function buildRecordMessagesHtml(rec, idx) {
-    return rec.messages
+    let html = rec.messages
         .map((msg, mIdx) => ({ msg, mIdx }))
         .filter(({ msg }) => isMessageVisible(msg))
         .map(({ msg, mIdx }) => buildMessageHtml(msg, idx, mIdx))
-        .join('')
-        + (rec.reply && isMessageVisible(rec.reply)
-            ? buildMessageHtml(rec.reply, idx, rec.messages.length)
-            : '');
+        .join('');
+    if (rec.reply && isMessageVisible(rec.reply)) {
+        html += buildMessageHtml(rec.reply, idx, rec.messages.length);
+    }
+    getRecordToolEntries(rec).forEach((toolEntry, toolIdx) => {
+        if (!isMessageVisible(toolEntry)) return;
+        html += buildMessageHtml(toolEntry, idx, rec.messages.length + 1 + toolIdx);
+    });
+    return html;
 }
 
 /* 折叠记录只出标题栏，正文（子消息标题 + 正文）留到展开时按需补建；已建过的直接复用。
@@ -6549,6 +6819,12 @@ function syncRecordHeaderVars(listEl) {
 
 /* boolean: 是否已有「视口尺寸变化」的重测排在下一帧（连续 resize 合并成一帧一次） */
 let viewportSyncQueued = false;
+/* number: 面板视口同步待执行的 requestAnimationFrame ID；0 = 当前没有排队 */
+let viewportSyncFrameId = 0;
+/* boolean: 是否已有「浮标视口校正」排在下一帧 */
+let badgeViewportSyncQueued = false;
+/* number: 浮标视口校正待执行的 requestAnimationFrame ID；0 = 当前没有排队 */
+let badgeViewportSyncFrameId = 0;
 
 /* number: 当前移动端布局基准对应的视口宽度；0 = 非移动布局或尚未建立基准 */
 let mobilePanelLayoutWidth = 0;
@@ -6556,14 +6832,105 @@ let mobilePanelLayoutWidth = 0;
 let mobilePanelLayoutHeight = 0;
 /* boolean: 是否已有「记录列表活动控件可见性」检查排在下一帧 */
 let activeListControlVisibilityQueued = false;
+/* number: 活动控件可见性检查待执行的 requestAnimationFrame ID；0 = 当前没有排队 */
+let activeListControlVisibilityFrameId = 0;
 /* number: 合并移动端高度变化的定时器；0 = 没有待执行更新 */
 let mobileLayoutHeightSyncTimer = 0;
 /* number: 输入控件失焦后的键盘释放宽限截止时间；0 = 不在释放宽限内 */
 let mobileKeyboardReleaseUntil = 0;
+/* boolean: 服务面板或浮标的 window.resize 是否已挂载 */
+let pageViewportResizeBound = false;
+/* boolean: 仅供移动端面板使用的 focus / visibility / visualViewport 监听是否已挂载 */
+let mobilePanelViewportListenersBound = false;
 
 /* 移动端视口判定：与样式断点一致（唯一断点 768px） */
 function isMobileViewport() {
     return window.matchMedia('(max-width: 768px)').matches;
+}
+
+/* 浮标是否真实显示；面板展开时浮标应已隐藏。 */
+function isBadgeVisible() {
+    return !!badgeEl && badgeEl.classList.contains('rlog-badge-active');
+}
+
+/* 取消尚未执行的面板视口同步，避免关闭或跨断点后继续维护隐藏面板。 */
+function cancelPanelViewportSync() {
+    if (viewportSyncFrameId) cancelAnimationFrame(viewportSyncFrameId);
+    viewportSyncFrameId = 0;
+    viewportSyncQueued = false;
+}
+
+/* 取消尚未执行的活动控件可见性检查。 */
+function cancelActiveListControlVisibility() {
+    if (activeListControlVisibilityFrameId) {
+        cancelAnimationFrame(activeListControlVisibilityFrameId);
+    }
+    activeListControlVisibilityFrameId = 0;
+    activeListControlVisibilityQueued = false;
+}
+
+/* 取消尚未执行的浮标视口校正。 */
+function cancelBadgeViewportSync() {
+    if (badgeViewportSyncFrameId) cancelAnimationFrame(badgeViewportSyncFrameId);
+    badgeViewportSyncFrameId = 0;
+    badgeViewportSyncQueued = false;
+}
+
+/* 窗口聚焦或页面重新可见后，补算离开期间错过的移动端高度。 */
+function handleMobilePanelViewportFocus() {
+    if (!isPanelExpanded || !isMobileViewport()) return;
+    scheduleMobilePanelLayoutHeightSync();
+}
+
+/* 页面从后台恢复时，移动端浏览器可能已调整可视高度。 */
+function handleMobilePanelVisibilityChange() {
+    if (!isPanelExpanded || document.hidden || !isMobileViewport()) return;
+    scheduleMobilePanelLayoutHeightSync();
+}
+
+/* 统一协调两组视口监听：页面尺寸监听服务面板或浮标，其余三组只服务移动端面板。 */
+function syncViewportListenerLifecycle() {
+    const needsPageResize = isPanelExpanded || isBadgeVisible();
+    if (needsPageResize && !pageViewportResizeBound) {
+        window.addEventListener('resize', handlePageViewportResize);
+        pageViewportResizeBound = true;
+    } else if (!needsPageResize && pageViewportResizeBound) {
+        window.removeEventListener('resize', handlePageViewportResize);
+        pageViewportResizeBound = false;
+    }
+
+    const needsMobilePanelViewport = isPanelExpanded && isMobileViewport();
+    if (needsMobilePanelViewport && !mobilePanelViewportListenersBound) {
+        window.addEventListener('focus', handleMobilePanelViewportFocus);
+        document.addEventListener('visibilitychange', handleMobilePanelVisibilityChange);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener(
+                'resize',
+                scheduleActiveListControlVisibility,
+            );
+        }
+        mobilePanelViewportListenersBound = true;
+    } else if (!needsMobilePanelViewport && mobilePanelViewportListenersBound) {
+        window.removeEventListener('focus', handleMobilePanelViewportFocus);
+        document.removeEventListener('visibilitychange', handleMobilePanelVisibilityChange);
+        if (window.visualViewport) {
+            window.visualViewport.removeEventListener(
+                'resize',
+                scheduleActiveListControlVisibility,
+            );
+        }
+        mobilePanelViewportListenersBound = false;
+    }
+
+    if (!isPanelExpanded) {
+        cancelPanelViewportSync();
+        cancelActiveListControlVisibility();
+    }
+    if (!needsMobilePanelViewport) {
+        clearMobileLayoutHeightSync();
+        cancelActiveListControlVisibility();
+    }
+    if (!isBadgeVisible()) cancelBadgeViewportSync();
 }
 
 /* 面板内可作为键盘输入目标的控件；计数序号是 contenteditable，也走同一套会话判断。 */
@@ -6664,7 +7031,7 @@ function scheduleMobilePanelLayoutHeightSync(delay = MOBILE_LAYOUT_HEIGHT_DELAY_
     clearMobileLayoutHeightSync();
     mobileLayoutHeightSyncTimer = setTimeout(() => {
         mobileLayoutHeightSyncTimer = 0;
-        if (!panelEl || !isMobileViewport()) return;
+        if (!panelEl || !isPanelExpanded || !isMobileViewport()) return;
 
         const height = Math.max(1, window.innerHeight);
         const shrink = mobilePanelLayoutHeight - height;
@@ -6684,7 +7051,7 @@ function scheduleMobilePanelLayoutHeightSync(delay = MOBILE_LAYOUT_HEIGHT_DELAY_
         const changed = syncMobilePanelLayoutMetrics(true);
         if (!changed) return;
         clampPanelGeometryAfterLayoutChange();
-        scheduleViewportSync();
+        schedulePanelViewportSync();
     }, Math.max(0, delay));
 }
 
@@ -6693,12 +7060,12 @@ function refreshMobilePanelLayoutForLayoutAction() {
     if (!isMobileViewport()) return;
     clearMobileLayoutHeightSync();
     const changed = syncMobilePanelLayoutMetrics(true);
-    if (changed && isPanelVisible) scheduleViewportSync();
+    if (changed && isPanelExpanded) schedulePanelViewportSync();
 }
 
 /* 横竖屏或跨断点后，只修正已经越出当前视口的手动拖拽/缩放几何；未手动改过尺寸时不写内联值。 */
 function clampPanelGeometryAfterLayoutChange() {
-    if (!panelEl || !isPanelVisible || isFullscreenActive()) return;
+    if (!panelEl || !isPanelExpanded || isFullscreenActive()) return;
     const hasCustomGeometry = !!(panelEl.style.left || panelEl.style.top
         || panelEl.style.width || panelEl.style.height);
     if (!hasCustomGeometry) return;
@@ -6754,18 +7121,20 @@ function ensureActiveListControlVisible() {
 
 /* 高度变化可能连续触发多次，活动控件可见性检查合并到下一帧执行。 */
 function scheduleActiveListControlVisibility() {
-    if (activeListControlVisibilityQueued) return;
+    if (!isPanelExpanded || !isMobileViewport() || activeListControlVisibilityQueued) return;
     activeListControlVisibilityQueued = true;
-    requestAnimationFrame(() => {
+    activeListControlVisibilityFrameId = requestAnimationFrame(() => {
+        activeListControlVisibilityFrameId = 0;
         activeListControlVisibilityQueued = false;
+        if (!isPanelExpanded || !isMobileViewport()) return;
         ensureActiveListControlVisible();
     });
 }
 
 /* 移动端宽度变化立即重建布局；高度变化先合并，键盘会话内缩减保持冻结。
    桌面端保留原有 resize 全量同步行为。 */
-function handleViewportResize() {
-    if (!panelEl) return;
+function handlePanelViewportResize() {
+    if (!panelEl || !isPanelExpanded) return;
     const mobile = isMobileViewport();
     const hadMobileLayout = mobilePanelLayoutWidth !== 0;
     const widthChanged = mobile && window.innerWidth !== mobilePanelLayoutWidth;
@@ -6774,14 +7143,14 @@ function handleViewportResize() {
         resetMobileKeyboardSession();
         syncMobilePanelLayoutMetrics(true);
         clampPanelGeometryAfterLayoutChange();
-        scheduleViewportSync();
+        schedulePanelViewportSync();
         return;
     }
     if (!mobile && hadMobileLayout) {
         resetMobileKeyboardSession();
         syncMobilePanelLayoutMetrics();
         clampPanelGeometryAfterLayoutChange();
-        scheduleViewportSync();
+        schedulePanelViewportSync();
         return;
     }
     if (mobile) {
@@ -6789,15 +7158,27 @@ function handleViewportResize() {
         scheduleActiveListControlVisibility();
         return;
     }
-    scheduleViewportSync();
+    schedulePanelViewportSync();
+}
+
+/* 唯一整页 resize 入口：面板展开时处理面板布局，只有浮标时只校正浮标。 */
+function handlePageViewportResize() {
+    if (isPanelExpanded) {
+        handlePanelViewportResize();
+    } else if (isBadgeVisible()) {
+        scheduleBadgeViewportSync();
+    }
+    syncViewportListenerLifecycle();
 }
 
 /* 面板自身的布局尺寸变化（全屏切换、拖拽缩放等）仍需完整刷新吸顶与正文带宽。 */
-function scheduleViewportSync() {
-    if (viewportSyncQueued) return;
+function schedulePanelViewportSync() {
+    if (!isPanelExpanded || viewportSyncQueued) return;
     viewportSyncQueued = true;
-    requestAnimationFrame(() => {
+    viewportSyncFrameId = requestAnimationFrame(() => {
+        viewportSyncFrameId = 0;
         viewportSyncQueued = false;
+        if (!isPanelExpanded) return;
         /* 移动端提示的可用宽度依赖当前视口和 ⓘ 位置；开着时随视口变化重算 */
         updateResponseMetaTipLayout();
         syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
@@ -6806,19 +7187,25 @@ function scheduleViewportSync() {
         requestThumbUpdate();
         /* 视口变化也可能改变正文换行宽度（桌面↔移动断点）：带宽维护内部会检测宽度并重建占位高度 */
         scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
-        /* 桌面↔移动切换时同步浮标尺寸 */
+    });
+}
+
+/* 浮标单独显示时只更新自身尺寸和位置，不访问隐藏面板的布局。 */
+function scheduleBadgeViewportSync() {
+    if (!isBadgeVisible() || isPanelExpanded || badgeViewportSyncQueued) return;
+    badgeViewportSyncQueued = true;
+    badgeViewportSyncFrameId = requestAnimationFrame(() => {
+        badgeViewportSyncFrameId = 0;
+        badgeViewportSyncQueued = false;
+        if (!isBadgeVisible() || isPanelExpanded) return;
         updateBadgeSize();
-        /* 浮标可见时随视口变化夹回可视区域；不限定折叠态——默认入口模式下浮标在非折叠态也会显示 */
-        if (badgeEl && badgeEl.classList.contains('rlog-badge-active')) {
-            const pos = clampBadgeToViewport(
-                parseFloat(badgeEl.style.left) || 0,
-                parseFloat(badgeEl.style.top) || 0
-            );
-            badgeEl.style.left = pos.left + 'px';
-            badgeEl.style.top = pos.top + 'px';
-            /* resize 后同步更新会话内记录位置 */
-            badgePos = pos;
-        }
+        const pos = clampBadgeToViewport(
+            parseFloat(badgeEl.style.left) || 0,
+            parseFloat(badgeEl.style.top) || 0
+        );
+        badgeEl.style.left = `${pos.left}px`;
+        badgeEl.style.top = `${pos.top}px`;
+        badgePos = pos;
     });
 }
 
@@ -7281,7 +7668,7 @@ function toggleRecordPinned(index, infoEl) {
     panelContentDirty = true;
     const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
     const prevScrollTop = listEl ? listEl.scrollTop : 0;
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         renderPanelContent();
         /* 渲染重建后保留当前滚动位置（置顶/取消置顶不主动跳到记录所在处） */
         if (listEl && listEl.isConnected) {
@@ -7373,13 +7760,15 @@ function toggleMessageCollapse(recIdx, msgIdx, msgItem) {
     }
 }
 
-/* 按消息索引取消息：前 N 条为 record.messages，最后一条伪消息是回复（data-msg = messages.length）
+/* 按消息索引取消息：前 N 条为请求消息，随后是 Response，最后是追加的 TOOL 条目。
    @param {object} record @param {number} msgIdx @returns {object|null} */
 function getMessageByIndex(record, msgIdx) {
     if (!record) return null;
     if (msgIdx < record.messages.length) return record.messages[msgIdx];
     if (msgIdx === record.messages.length) return record.reply || null;
-    return null;
+    const toolIdx = msgIdx - record.messages.length - 1;
+    const toolEntries = getRecordToolEntries(record);
+    return toolIdx >= 0 && toolIdx < toolEntries.length ? toolEntries[toolIdx] : null;
 }
 
 /* 标题栏「折叠所有条目」：折叠所有记录及其内部的所有消息 */
@@ -7392,6 +7781,7 @@ function collapseAllEntries() {
         r.collapsed = true;
         r.messages.forEach(m => { m.collapsed = true; });
         if (r.reply) r.reply.collapsed = true;
+        getRecordToolEntries(r).forEach(m => { m.collapsed = true; });
         const recordEl = panelEl.querySelector(`.rlog-record[data-record-index="${i}"]`);
         if (recordEl) {
             recordEl.classList.add('collapsed');
@@ -7420,6 +7810,7 @@ function collapseRecordMessages(index) {
 
     record.messages.forEach(m => { m.collapsed = true; });
     if (record.reply) record.reply.collapsed = true;
+    getRecordToolEntries(record).forEach(m => { m.collapsed = true; });
 
     const listEl = panelEl ? panelEl.querySelector('#rlog-list') : null;
     const recordEl = listEl ? listEl.querySelector(`.rlog-record[data-record-index="${index}"]`) : null;
@@ -7449,6 +7840,7 @@ function expandRecordMessages(index) {
 
     record.messages.forEach(m => { m.collapsed = false; });
     if (record.reply) record.reply.collapsed = false;
+    getRecordToolEntries(record).forEach(m => { m.collapsed = false; });
 
     const recordEl = panelEl.querySelector(`.rlog-record[data-record-index="${index}"]`);
     if (recordEl) {
@@ -7576,10 +7968,9 @@ function scrollToRecordEl(recordEl) {
     }
 }
 
-/* 无按钮回顶的提示闪烁：展开时闪第一条子消息标题栏，折叠/不可见时闪记录标题栏；
-   面板未打开或窗口折叠时不触发 */
+/* 无按钮回顶的提示闪烁：面板展开时闪第一条子消息标题栏；面板隐藏时不触发 */
 function flashTopHint(recordEl) {
-    if (!panelEl || !isPanelVisible || isPanelCollapsed) return;
+    if (!panelEl || !isPanelExpanded) return;
     const listEl = panelEl.querySelector('#rlog-list');
     const firstRecord = recordEl || (listEl ? listEl.querySelector('.rlog-record') : null);
     if (!firstRecord) return;
@@ -7635,7 +8026,7 @@ function deleteRecord(index) {
     if (record && record.id != null) abortPendingReply(record.id);
     records.splice(index, 1);
     panelContentDirty = true;
-    if (panelEl && isPanelVisible) {
+    if (panelEl && isPanelExpanded) {
         renderPanelContent();
     }
 }
@@ -7643,7 +8034,7 @@ function deleteRecord(index) {
 async function copyFullRecord(index, btnEl) {
     const record = records[index];
     if (!record) return;
-    const text = getFullPromptText(record);
+    const text = getFullRecordText(record);
     await doCopy(text, btnEl);
 }
 
@@ -7730,19 +8121,38 @@ function showCopyFeedback(btnEl, success, successTitle = '已复制', failureTit
 
 /* ── 查看全文覆盖层 ──────────────────────── */
 
-/* 取覆盖层内容区的文本 @param {object} record @param {string} format formatted 或 raw @returns {string} */
+/* 将合法 JSON 响应整理为缩进文本；SSE 或纯文本保持读取到的原始内容。 */
+function getRawResponseDisplayText(rawResponseText) {
+    if (typeof rawResponseText !== 'string' || !rawResponseText.trim()) return '';
+    const trimmed = rawResponseText.trim();
+    try {
+        return JSON.stringify(JSON.parse(trimmed), null, 2);
+    } catch (e) {
+        return rawResponseText;
+    }
+}
+
+/* 取覆盖层内容区的文本：请求原始 JSON 在前，响应原始数据在后，不做统一包装。
+   @param {object} record @param {string} format formatted 或 raw @returns {string} */
 function getReadContent(record, format) {
     if (format === 'raw') {
+        let requestText;
         if (!record.rawBody) {
-            return '{"error": "原始请求体数据不可用"}';
+            requestText = '{"error": "原始请求体数据不可用"}';
+        } else {
+            try {
+                requestText = JSON.stringify(record.rawBody, null, 2);
+            } catch (e) {
+                requestText = '{"error": "原始请求体数据不可用"}';
+            }
         }
-        try {
-            return JSON.stringify(record.rawBody, null, 2);
-        } catch (e) {
-            return '{"error": "原始请求体数据不可用"}';
-        }
+        const requestBlock = `----- 原始请求 -----\n\n${requestText}`;
+        const responseText = getRawResponseDisplayText(record.rawResponseText);
+        return responseText
+            ? `${requestBlock}\n\n----- 原始响应 -----\n\n${responseText}`
+            : requestBlock;
     }
-    return getFullPromptText(record);
+    return getFullRecordText(record);
 }
 
 /* 取请求发起时间；旧记录没有 requestStartedAt 时回退到标题栏记录的请求时间 */
@@ -7861,7 +8271,7 @@ function handleReadFullEscape(e) {
     }
 }
 
-/* 打开「查看全文」覆盖层，展示指定记录的完整提示词；覆盖层挂到 #rlog-panel 内、完整遮挡面板
+/* 打开「查看全文」覆盖层，展示完整请求、Response 与 TOOL；覆盖层完整遮挡面板
    @param {number} index 记录索引 */
 function openReadFullOverlay(index) {
     /* 先退出搜索模式（覆盖层打开期间搜索不可见不可操作） */
@@ -8618,7 +9028,7 @@ function pruneDetachedUnloadedBodies() {
 function runBodyBandPass(listEl) {
     if (!listEl || !listEl.isConnected) return;
     /* 面板隐藏 / 列表没有实际布局时不做：此时 rect 全为 0，带宽判定没有意义 */
-    if (!isPanelVisible || listEl.clientHeight === 0) return;
+    if (!isPanelExpanded || listEl.clientHeight === 0) return;
 
     const startedAt = performance.now();
 
@@ -8743,13 +9153,24 @@ function syncBadgeTheme() {
     badgeEl.classList.toggle('rlog-badge-light', isDark);
 }
 
-/* 初始化浮标配色的主题跟随：先同步一次，再监听 <html> 的 style 属性（ST 没有主题变化事件）；
+/* 浮标显示期间监听 <html> 的 style 属性（ST 没有主题变化事件）；
    挂点将来失效只表现为浮标配色不再更新 */
-function initBadgeThemeSync() {
-    syncBadgeTheme();
-    if (badgeThemeObserver) return;
-    badgeThemeObserver = new MutationObserver(() => syncBadgeTheme());
+function activateBadgeThemeFollow() {
+    if (!badgeEl || isPanelExpanded || !badgeEl.classList.contains('rlog-badge-active')) return;
+    if (!badgeThemeObserver) {
+        badgeThemeObserver = new MutationObserver(() => {
+            if (isPanelExpanded || !badgeEl.classList.contains('rlog-badge-active')) return;
+            syncBadgeTheme();
+        });
+    }
     badgeThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+}
+
+/* 浮标隐藏时摘除主题观察器，下次显示前再按当前 ST 主题同步一次。 */
+function deactivateBadgeThemeFollow() {
+    if (!badgeThemeObserver) return;
+    badgeThemeObserver.disconnect();
+    badgeThemeObserver = null;
 }
 
 /* 重置面板为默认定位/尺寸：清掉拖拽/缩放写入的 inline 样式，让 style.css 的默认值生效
@@ -8768,74 +9189,34 @@ function resetPanelToDefault() {
     panelEl.style.transition = '';
 }
 
-/* 切换浮标显隐：浮标仅在「收起面板」态显示（.rlog-badge-active），其余时间隐藏 */
+/* 切换浮标显隐：浮标是面板隐藏时共用的入口，不区分临时显示与常驻显示。
+   主题观察器只在浮标真实显示期间存在；显示前先补一次当前配色。 */
 function setBadgeActive(active) {
     if (!badgeEl) return;
-    if (active) badgeEl.classList.add('rlog-badge-active');
-    else badgeEl.classList.remove('rlog-badge-active');
+    if (!active) {
+        deactivateBadgeThemeFollow();
+        badgeEl.classList.remove('rlog-badge-active');
+        badgeEl.style.display = 'none';
+        return;
+    }
+    syncBadgeTheme();
+    badgeEl.classList.add('rlog-badge-active');
     /* host 是 light DOM，用 inline display 最稳，避免第三方主题通过普通 CSS 影响显隐 */
-    badgeEl.style.display = active ? 'flex' : 'none';
+    badgeEl.style.display = 'flex';
+    activateBadgeThemeFollow();
 }
 
-/* 最小化按钮触发的「面板 ↔ 浮标」切换；浮标恢复面板时也复用这里。 */
-function togglePanelWindow() {
-    isPanelCollapsed = !isPanelCollapsed;
-    if (isPanelCollapsed) {
-        /* 收起为浮标：尚未建立位置时使用右上角默认位置；拖动后复用拖动位置，刷新后重置 */
-        hidePinToast();
-        hideResponseMetaTip();
-        /* 收起为浮标与关闭面板一致：退出全局搜索会话 */
-        setGlobalSearchDrawerOpen(false);
-        /* 筛选抽屉属于面板内界面，面板消失时一并收起 */
-        closeFilterDrawer();
-        /* 三个抽屉共用同一位置，面板消失时「更多」也一并收起。 */
-        closeMoreDrawer();
-        /* 与关闭面板一致：隐藏前清掉播放中的动画类（闪烁 / 主题切换），
-          否则隐藏期间动画不推进，重新展开会从头补播一次 */
-        clearPanelAnimations();
-        /* 与关闭面板一致：收起前趁布局有效把视口外正文卸载，展开时不必为它们付排版与绘制 */
-        runBodyBandPass(panelEl.querySelector('#rlog-list'));
-        resetMobileKeyboardSession();
-        panelEl.classList.add('rlog-window-collapsed');
-        panelEl.style.display = 'none';
-        if (badgeEl) {
-            if (!badgePos) badgePos = getDefaultBadgePos();
-            /* 复用记录位置，并在当前视口/尺寸下 clamp（窗口缩小或断点切换后仍保证可见） */
-            else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
-            badgeEl.style.left = badgePos.left + 'px';
-            badgeEl.style.top = badgePos.top + 'px';
-        }
-        setBadgeActive(true);
-    } else {
-        setBadgeActive(false);
-        panelEl.classList.remove('rlog-window-collapsed');
-        panelEl.style.display = 'flex';
-        resetPanelToDefault();
-        refreshMobilePanelLayoutForLayoutAction();
-        /* 折叠期间可能已有数据/渲染变化（新记录到达），恢复前先重建 DOM */
-        if (panelContentDirty) {
-            renderPanelContent();
-        }
-        /* 窗口重新展开后重测记录标题栏高度（隐藏期间 offsetHeight 为 0，吸顶偏移需刷新） */
-        syncRecordHeaderVars(panelEl.querySelector('#rlog-list'));
-        /* 折叠期间有新记录到达时，恢复展开后回到列表顶部最新一条 */
-        if (pendingScrollToTop) {
-            pendingScrollToTop = false;
-            const newRecordEl = getRecordElByIndex(0);
-            if (newRecordEl) {
-                scrollToRecordEl(newRecordEl);
-                flashTopHint(newRecordEl);
-            } else {
-                const listEl = panelEl.querySelector('#rlog-list');
-                if (listEl) listEl.scrollTop = 0;
-                flashTopHint();
-            }
-        }
-        /* 重新展开后面板不会自己发 scroll 事件，主动跑一次带宽维护（与前一条打开路径一致） */
-        runBodyBandPass(panelEl.querySelector('#rlog-list'));
-    }
-    if (isPanelCollapsed) stopPanelOutsideCloseListener();
-    else schedulePanelOutsideCloseListener();
+/* 在会话位置显示浮标；尚未建立位置时使用右上默认位置。 */
+function showBadgeAtStoredPosition() {
+    if (!badgeEl) return;
+    /* 隐藏期间可能已经跨过桌面/移动断点；先按当前视口补正尺寸，再夹取记录位置。 */
+    updateBadgeSize();
+    if (!badgePos) badgePos = getDefaultBadgePos();
+    else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
+    badgeEl.style.left = badgePos.left + 'px';
+    badgeEl.style.top = badgePos.top + 'px';
+    setBadgeActive(true);
+    syncViewportListenerLifecycle();
 }
 
 function addMenuEntry() {
@@ -9103,7 +9484,7 @@ function closeMoreDrawer() {
 
 /* 防误触层不在帘幕裁切范围内，按搜索控件的实时位置与宽度单独对齐。 */
 function syncGlobalSearchGuard() {
-    if (!panelEl) return;
+    if (!globalSearchOpen || !panelEl) return;
     const drawer = panelEl.querySelector('#rlog-global-search-drawer');
     const controls = panelEl.querySelector('.rlog-global-search-controls');
     const guard = panelEl.querySelector('.rlog-global-search-guard');
@@ -9113,6 +9494,30 @@ function syncGlobalSearchGuard() {
     guard.style.width = `${controlsRect.width}px`;
     guard.style.right = `${Math.max(0, drawerRect.right - controlsRect.right)}px`;
     guard.style.top = `${Math.max(0, controlsRect.bottom - drawerRect.top)}px`;
+}
+
+/* 防误触观察器只在全局搜索抽屉展开时观察控件；实例复用，重复开合不会叠加观察器。 */
+function activateGlobalSearchGuardObserver() {
+    if (!globalSearchOpen || !panelEl || typeof ResizeObserver !== 'function') return;
+    const drawer = panelEl.querySelector('#rlog-global-search-drawer');
+    const controls = panelEl.querySelector('.rlog-global-search-controls');
+    if (!drawer || !controls) return;
+    if (!globalSearchGuardObserver) {
+        globalSearchGuardObserver = new ResizeObserver(syncGlobalSearchGuard);
+    }
+    if (!globalSearchGuardObserverActive) {
+        globalSearchGuardObserver.observe(controls);
+        globalSearchGuardObserver.observe(drawer);
+        globalSearchGuardObserverActive = true;
+    }
+    syncGlobalSearchGuard();
+}
+
+/* 抽屉关闭后立即断开观察；下次展开由同一实例重新连接。 */
+function deactivateGlobalSearchGuardObserver() {
+    if (!globalSearchGuardObserver || !globalSearchGuardObserverActive) return;
+    globalSearchGuardObserver.disconnect();
+    globalSearchGuardObserverActive = false;
 }
 
 /* 统一管理全局搜索抽屉的开合与会话状态（关闭面板时也复用这里） */
@@ -9133,6 +9538,7 @@ function setGlobalSearchDrawerOpen(open) {
         drawer.inert = !globalSearchOpen;
     }
     if (!globalSearchOpen) {
+        deactivateGlobalSearchGuardObserver();
         resetGlobalSearch();
         const activeEl = panelShadowRoot ? panelShadowRoot.activeElement : null;
         if (drawer && activeEl && drawer.contains(activeEl) && activeEl.blur) activeEl.blur();
@@ -9141,7 +9547,7 @@ function setGlobalSearchDrawerOpen(open) {
         btn.classList.toggle('active-drawer-btn', globalSearchOpen);
         btn.setAttribute('aria-expanded', globalSearchOpen ? 'true' : 'false');
     }
-    if (globalSearchOpen) syncGlobalSearchGuard();
+    if (globalSearchOpen) activateGlobalSearchGuardObserver();
 }
 
 /* 统一管理筛选抽屉的展开、按钮激活态与无障碍状态；打开时结束全局搜索并保留筛选条件。 */
@@ -9518,8 +9924,6 @@ function buildUI() {
         </div>
     `;
 
-    panelEl.classList.remove('rlog-window-collapsed');
-
     /* 面板打开期间的正文带宽维护：滚动时按需补回进入视口的正文、把离开视口的卸载掉 */
     initBodyBandMaintenance(panelEl.querySelector('#rlog-list'));
 
@@ -9564,8 +9968,6 @@ function buildUI() {
     /* 同步浮标当前尺寸，然后交给指针交互（配色由 style.css 里挂 #rlog-badge-host 的变量提供） */
     updateBadgeSize();
     initBadgeInteraction();
-    /* 浮标配色跟随 ST 亮暗主题（含后续主题切换的监听；配色取值仍在 style.css 变量总表） */
-    initBadgeThemeSync();
     /* host 就绪后重放主题类（供面板/弹窗用；浮标配色由上面单独跟随 ST 主题） */
     applyTheme();
 
@@ -9573,16 +9975,6 @@ function buildUI() {
     const moreDrawer = panelEl.querySelector('#rlog-more-drawer');
     const filterBtn = panelEl.querySelector('#rlog-filter-btn');
     const filterDrawer = panelEl.querySelector('#rlog-filter-drawer');
-    const globalSearchGuardDrawer = panelEl.querySelector('#rlog-global-search-drawer');
-    const globalSearchGuardControls = panelEl.querySelector('.rlog-global-search-controls');
-    if (globalSearchGuardControls && globalSearchGuardDrawer && typeof ResizeObserver === 'function') {
-        globalSearchGuardObserver?.disconnect();
-        globalSearchGuardObserver = new ResizeObserver(syncGlobalSearchGuard);
-        globalSearchGuardObserver.observe(globalSearchGuardControls);
-        globalSearchGuardObserver.observe(globalSearchGuardDrawer);
-    }
-    syncGlobalSearchGuard();
-
     moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         setMoreDrawerOpen(!moreDrawer.classList.contains('expanded'));
@@ -9739,13 +10131,13 @@ function buildUI() {
         });
     }
 
-    panelEl.querySelector('#rlog-close-btn').addEventListener('click', hidePanel);
+    panelEl.querySelector('#rlog-close-btn').addEventListener('click', () => hidePanel());
 
     panelEl.querySelector('#rlog-minimize-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         /* 引导期间不收起：浮标会让引导高亮目标（面板内元素）消失，破坏引导 */
         if (tourActive) return;
-        togglePanelWindow();
+        minimizePanel();
     });
 
     panelEl.querySelector('#rlog-fullscreen-btn').addEventListener('click', (e) => {
@@ -9795,9 +10187,6 @@ function buildUI() {
             setGlobalSearchDrawerOpen(false);
             closeMoreDrawer();
             closeFilterDrawer();
-            
-            if (isPanelCollapsed) togglePanelWindow();
-            
             window.__RLogTour.start();
         }
     });
@@ -9897,19 +10286,10 @@ function buildUI() {
     }
     /* 极简模式：按偏好给影子宿主加/去类（触发 :host 极简规则） */
     updateMinimalClass();
-    /* 「昼夜模式跟随 ST 主题」：开启时静默同步到 ST 当前主题并挂上主题变化监听（此刻不播动画） */
-    initPanelThemeFollow(false);
     /* 筛选状态持久化：开启时读取上次持久化的筛选覆盖默认值（须在 updateFilterChipUI 前生效） */
     loadPersistedFilterState();
-    /* 「浮标默认入口」：开启时启动默认显示浮标（右上角默认位置），面板保持隐藏、非折叠态；
-       badgePos 仍不持久化——刷新/重新初始化回到默认位置 */
-    if (preferences.badgeDefault && badgeEl) {
-        if (!badgePos) badgePos = getDefaultBadgePos();
-        else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
-        badgeEl.style.left = badgePos.left + 'px';
-        badgeEl.style.top = badgePos.top + 'px';
-        setBadgeActive(true);
-    }
+    /* 「浮标默认入口」：开启时启动显示常驻浮标；badgePos 仍不持久化 */
+    if (preferences.badgeDefault) showBadgeAtStoredPosition();
 
     panelEl.querySelector('#rlog-theme-btn').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -9947,28 +10327,11 @@ function buildUI() {
         });
     }
 
-    makeDraggable(panelEl);
-    makeResizable(panelEl);
+    panelHeaderDragBinding = makeDraggable(panelEl);
+    panelResizeBinding = makeResizable(panelEl);
 
-    /* 移动端宽度变化重算布局，单纯高度变化只处理键盘遮挡；桌面端保持原 resize 行为。
-       连续 resize 由各自入口合并到下一帧，一帧最多执行一次。 */
-    if (!window.rlogHeaderVarResizeInstalled) {
-        window.rlogHeaderVarResizeInstalled = true;
-        window.addEventListener('resize', handleViewportResize);
-    }
-    if (window.visualViewport && !window.rlogVisualViewportResizeInstalled) {
-        window.rlogVisualViewportResizeInstalled = true;
-        window.visualViewport.addEventListener('resize', scheduleActiveListControlVisibility);
-    }
-    if (!window.rlogMobileLayoutFocusInstalled) {
-        window.rlogMobileLayoutFocusInstalled = true;
-        window.addEventListener('focus', () => {
-            if (isMobileViewport()) scheduleMobilePanelLayoutHeightSync();
-        });
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && isMobileViewport()) scheduleMobilePanelLayoutHeightSync();
-        });
-    }
+    /* UI 初始隐藏时不挂视口监听；显示面板或浮标时由统一协调入口按需恢复。 */
+    syncViewportListenerLifecycle();
 
     /* 安装来源识别监听（仅记录用户原生入口，不受总开关影响） */
     installSourceTracking();
@@ -10035,7 +10398,7 @@ function playThemeSwitchAnimation() {
             panelEl.classList.remove('rlog-theme-transitioning');
             /* 这两帧内面板可能已被隐藏（关闭 / 收起为浮标）：隐藏期间不补动画类，
                否则重新显示时会从头补播一次 */
-            if (!isPanelVisible || isPanelCollapsed) return;
+            if (!isPanelExpanded) return;
             if (isLightTheme) {
                 panelEl.classList.add('rlog-anim-light');
             } else {
@@ -10051,11 +10414,11 @@ function playThemeSwitchAnimation() {
     });
 }
 
-/* 面板打开期间监听真实用户的外部点击；关闭或缩成浮标后不再保留全局监听。 */
+/* 面板展开期间监听真实用户的外部点击；隐藏后不再保留全局监听。 */
 function handlePanelOutsideClick(e) {
     /* 程序化 click（如焦点保持、第三方内部触发）不是用户的新点击，不参与点外关闭 */
     if (!e.isTrusted) return;
-    if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed) return;
+    if (!preferences.clickOutside || !isPanelExpanded) return;
     const insidePanel = e.target === shadowHostEl || e.composedPath().includes(panelEl);
     if (insidePanel) return;
     hidePanel();
@@ -10072,21 +10435,21 @@ function stopPanelOutsideCloseListener() {
 /* 打开入口的 click 先完整冒泡，再在下一轮任务注册外部点击监听 */
 function schedulePanelOutsideCloseListener() {
     stopPanelOutsideCloseListener();
-    if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed || !panelEl) return;
+    if (!preferences.clickOutside || !isPanelExpanded || !panelEl) return;
     panelOutsideCloseArmTimer = setTimeout(() => {
         panelOutsideCloseArmTimer = null;
-        if (!preferences.clickOutside || !isPanelVisible || isPanelCollapsed || !panelEl) return;
+        if (!preferences.clickOutside || !isPanelExpanded || !panelEl) return;
         document.addEventListener('click', handlePanelOutsideClick);
     }, 0);
 }
 
 function togglePanel() {
-    isPanelVisible ? hidePanel() : showPanel();
+    isPanelExpanded ? hidePanel() : showPanel();
 }
 
-/* 面板隐藏前（关闭面板 / 收起为浮标）清掉正在播的动画类、取消待触发的闪烁。
+/* 面板隐藏前（普通关闭 / 最小化）清掉正在播的动画类、取消待触发的闪烁。
    元素隐藏期间动画不推进、也不派发 animationend，类留着会在重新显示时从头补播；
-   两条隐藏路径共用这里，保证清理行为一致。
+   两种隐藏方式共用这里，保证清理行为一致。
    rlog-theme-transitioning 本来由双 rAF 摘除，若恰好在这两帧内被隐藏也一并清掉。 */
 function clearPanelAnimations() {
     if (!panelEl) return;
@@ -10095,17 +10458,19 @@ function clearPanelAnimations() {
     panelEl.classList.remove('rlog-anim-light', 'rlog-anim-dark', 'rlog-theme-transitioning');
 }
 
-function showPanel() {
+function showPanel({ resetPosition = null } = {}) {
     if (!panelEl) buildUI();
-    /* 兜底：确保从浮标/折叠态回到展开面板 */
+    /* 浮标只作为打开入口；展开时统一隐藏浮标 */
     setBadgeActive(false);
-    panelEl.classList.remove('rlog-window-collapsed');
-    isPanelCollapsed = false;
-    /* 「浮标默认入口」：重新打开面板一律回到插件默认位置/尺寸（两个打开路径统一）；
-       非默认入口维持原展示位置 */
-    if (preferences.badgeDefault) resetPanelToDefault();
+    /* 关闭期间错过的主题变化要在显示前提交；否则从旧主题切到新主题会起一轮颜色过渡。
+       此处只同步类，不播放主题切换动画；观察器在面板展开后恢复。 */
+    if (preferences.followStTheme) syncPanelThemeToSt(false);
+    if (resetPosition ?? preferences.badgeDefault) resetPanelToDefault();
     panelEl.style.display = 'flex';
-    isPanelVisible = true;
+    isPanelExpanded = true;
+    /* 面板已补到当前主题；恢复展示期间的主题变化观察。 */
+    activatePanelThemeFollow(false);
+    activatePanelPointerListeners();
     /* 打开面板采用当前视口高度，再同步现有全屏状态；默认值仍只在初始化时计算 */
     resetMobileKeyboardSession();
     refreshMobilePanelLayoutForLayoutAction();
@@ -10118,7 +10483,7 @@ function showPanel() {
     /* 面板显示后重测记录标题栏高度：隐藏状态下 offsetHeight 为 0，吸顶偏移需以可见高度为准 */
     syncRecordHeaderVars(panelEl.querySelector('#rlog-list'));
     /* 面板关闭期间有新记录到达时，重新打开后回到列表顶部最新一条 */
-    if (pendingScrollToTop && !isPanelCollapsed) {
+    if (pendingScrollToTop) {
         pendingScrollToTop = false;
         const newRecordEl = getRecordElByIndex(0);
         if (newRecordEl) {
@@ -10140,9 +10505,12 @@ function showPanel() {
     if (window.__RLogTour && typeof window.__RLogTour.check === 'function') {
         setTimeout(() => window.__RLogTour.check(), 300);
     }
+    syncViewportListenerLifecycle();
 }
 
-function hidePanel() {
+function hidePanel({ forceBadge = false } = {}) {
+    deactivatePanelThemeFollow();
+    deactivatePanelPointerListeners();
     stopPanelOutsideCloseListener();
     resetMobileKeyboardSession();
     /* 关闭面板时退出搜索模式 */
@@ -10165,34 +10533,45 @@ function hidePanel() {
        重新打开时只需为可见部分付排版与绘制，不再为全部已展开正文买单。
        必须排在 resetSearchIfActive() 之后——搜索高亮先还原成纯文本，这里才不会卸掉带 <mark> 的正文 */
     runBodyBandPass(panelEl ? panelEl.querySelector('#rlog-list') : null);
-    isPanelCollapsed = false;
     if (panelEl) {
         /* 清理播放中的动画类（闪烁 / 主题切换），防止下次打开时重播 */
         clearPanelAnimations();
-        panelEl.classList.remove('rlog-window-collapsed');
         panelEl.style.display = 'none';
     }
-    isPanelVisible = false;
+    isPanelExpanded = false;
     if (toggleBtn) toggleBtn.classList.remove('active');
-    /* 「浮标默认入口」：关闭面板后浮标回到 badgePos（为空则用右上默认位置），仍不持久化；
-       非默认入口保持原状——面板完全关闭、浮标消失 */
-    if (preferences.badgeDefault && badgeEl) {
-        if (!badgePos) badgePos = getDefaultBadgePos();
-        else badgePos = clampBadgeToViewport(badgePos.left, badgePos.top);
-        badgeEl.style.left = badgePos.left + 'px';
-        badgeEl.style.top = badgePos.top + 'px';
-        setBadgeActive(true);
-    } else {
-        setBadgeActive(false);
-    }
+    /* 最小化强制显示临时浮标；普通关闭按默认入口偏好决定是否常驻 */
+    if (forceBadge || preferences.badgeDefault) showBadgeAtStoredPosition();
+    else setBadgeActive(false);
+    syncViewportListenerLifecycle();
+}
+
+function minimizePanel() {
+    hidePanel({ forceBadge: true });
 }
 
 
 /* ── 拖拽与缩放 ────────────────────────── */
 
+/* 标题栏拖动与缩放只在面板展开时监听整页移动/松手。 */
+function activatePanelPointerListeners() {
+    if (panelPointerListenersBound) return;
+    if (!panelHeaderDragBinding || !panelResizeBinding) return;
+    panelPointerListenersBound = true;
+    panelHeaderDragBinding.bind();
+    panelResizeBinding.bind();
+}
+
+/* 面板隐藏时摘下整页监听，并清理可能尚未结束的拖动/缩放状态。 */
+function deactivatePanelPointerListeners() {
+    panelPointerListenersBound = false;
+    if (panelHeaderDragBinding) panelHeaderDragBinding.unbind();
+    if (panelResizeBinding) panelResizeBinding.unbind();
+}
+
 function makeResizable(el) {
     const grip = el.querySelector('.rlog-resize-grip');
-    if (!grip) return;
+    if (!grip) return null;
 
     grip.addEventListener('mousedown', (e) => {
         e.stopPropagation();
@@ -10228,75 +10607,98 @@ function makeResizable(el) {
         el.style.top = `${rect.top}px`;
         el.style.transition = 'none';
     });
-}
 
-(function initGlobalResize() {
-    document.addEventListener('mousemove', (e) => {
-        if (!panelResizing || !panelEl) return;
-        const dx = e.clientX - resizeStartX;
-        const dy = e.clientY - resizeStartY;
+    function applyResize(clientX, clientY) {
+        const dx = clientX - resizeStartX;
+        const dy = clientY - resizeStartY;
         const newW = Math.max(350, resizeStartW + dx);
         const newH = Math.max(200, resizeStartH + dy);
         panelEl.style.width = `${newW}px`;
         panelEl.style.height = `${newH}px`;
         panelEl.style.maxHeight = 'none';
-    });
+    }
 
-    document.addEventListener('mouseup', () => {
-        if (panelResizing) {
-            panelResizing = false;
-            if (panelEl) panelEl.style.transition = '';
-            /* 面板宽度变化可能改变记录标题栏换行高度，重测吸顶偏移 */
-            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
-            /* 面板宽度变化也会改变正文换行宽度 → 让带宽维护按新几何重建占位高度 */
-            scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
-        }
-    });
+    function handleResizeMouseMove(e) {
+        if (!panelResizing || !panelEl) return;
+        applyResize(e.clientX, e.clientY);
+    }
 
-    document.addEventListener('touchmove', (e) => {
+    function handleResizeTouchMove(e) {
         if (!panelResizing || !panelEl) return;
         e.preventDefault();
-        const dx = e.touches[0].clientX - resizeStartX;
-        const dy = e.touches[0].clientY - resizeStartY;
-        const newW = Math.max(350, resizeStartW + dx);
-        const newH = Math.max(200, resizeStartH + dy);
-        panelEl.style.width = `${newW}px`;
-        panelEl.style.height = `${newH}px`;
-        panelEl.style.maxHeight = 'none';
-    }, { passive: false });
+        applyResize(e.touches[0].clientX, e.touches[0].clientY);
+    }
 
-    document.addEventListener('touchend', () => {
-        if (panelResizing) {
-            panelResizing = false;
-            if (panelEl) panelEl.style.transition = '';
-            syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
-            /* 触屏拖动缩放同理：宽度变了就按新几何重建占位高度 */
-            scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
-        }
-    });
-})();
+    function finishResize() {
+        if (!panelResizing) return;
+        panelResizing = false;
+        if (panelEl) panelEl.style.transition = '';
+        /* 面板宽度变化可能改变记录标题栏换行高度，重测吸顶偏移 */
+        syncRecordHeaderVars(panelEl && panelEl.querySelector('#rlog-list'));
+        /* 面板宽度变化也会改变正文换行宽度 → 让带宽维护按新几何重建占位高度 */
+        scheduleBodyBandPass(panelEl && panelEl.querySelector('#rlog-list'));
+    }
+
+    return {
+        bind() {
+            document.addEventListener('mousemove', handleResizeMouseMove);
+            document.addEventListener('mouseup', finishResize);
+            document.addEventListener('touchmove', handleResizeTouchMove, { passive: false });
+            document.addEventListener('touchend', finishResize);
+            document.addEventListener('touchcancel', finishResize);
+        },
+        unbind() {
+            document.removeEventListener('mousemove', handleResizeMouseMove);
+            document.removeEventListener('mouseup', finishResize);
+            document.removeEventListener('touchmove', handleResizeTouchMove, { passive: false });
+            document.removeEventListener('touchend', finishResize);
+            document.removeEventListener('touchcancel', finishResize);
+            if (panelResizing) {
+                panelResizing = false;
+                if (panelEl) panelEl.style.transition = '';
+            }
+        },
+    };
+}
 
 /* 浮标拖拽/点击交互（Pointer Events 统一鼠标与触屏）：位移 > BADGE_DRAG_THRESHOLD 视为拖动，
    pointerup 时不恢复面板；未达到阈值视为点击，恢复面板 */
 function initBadgeInteraction() {
     if (!badgeEl) return;
-    /* 点浮标恢复面板后浮标隐藏、同坐标出现面板，浏览器随后派发的原生 click 会 hit-test 到该位置的
-       面板按钮/标题上（误开抽屉或误触折叠）；用捕获阶段的一次性守卫按标记拦掉 */
-    if (!document.rlogBadgeClickGuardInstalled) {
-        document.rlogBadgeClickGuardInstalled = true;
-        document.addEventListener('click', (e) => {
-            if (badgeSuppressNextClick) {
-                badgeSuppressNextClick = false;
-                e.stopPropagation();
-                e.preventDefault();
-            }
-        }, true);
-    }
     let dragActive = false;
     let dragged = false;
     let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+    let badgeClickGuardTimer = null;
+
+    function handleBadgeDragClickGuard(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        disarmBadgeDragClickGuard();
+    }
+
+    /* 拖后 click 状态与捕获监听只短暂存在；没有 click 时下一轮任务立即撤销。 */
+    function disarmBadgeDragClickGuard() {
+        if (badgeClickGuardTimer !== null) {
+            clearTimeout(badgeClickGuardTimer);
+            badgeClickGuardTimer = null;
+        }
+        document.removeEventListener('click', handleBadgeDragClickGuard, true);
+        badgeSuppressNextClick = false;
+    }
+
+    /* 浮标在 pointerup 后可能立即派发原生 click；此时才注册一次性的 document 捕获守卫。 */
+    function armBadgeDragClickGuard() {
+        disarmBadgeDragClickGuard();
+        badgeSuppressNextClick = true;
+        document.addEventListener('click', handleBadgeDragClickGuard, true);
+        badgeClickGuardTimer = setTimeout(() => {
+            badgeClickGuardTimer = null;
+            disarmBadgeDragClickGuard();
+        }, 0);
+    }
 
     badgeEl.addEventListener('pointerdown', (e) => {
+        disarmBadgeDragClickGuard();
         e.stopPropagation();
         dragActive = true;
         dragged = false;
@@ -10330,15 +10732,15 @@ function initBadgeInteraction() {
         e.stopPropagation();
         try { badgeEl.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
         const wasDrag = dragged;
-        if (wasDrag) {
-            /* 拖拽：浏览器仍会在 pointerup 后补发原生 click，拦掉它以免误当成「点击打开面板」 */
-            badgeSuppressNextClick = true;
-            setTimeout(() => { badgeSuppressNextClick = false; }, 0);
-        }
         if (e.type === 'pointercancel') {
             /* 指针取消（如触摸被系统打断）：不派生 click，直接结束 */
+            disarmBadgeDragClickGuard();
             dragged = false;
             return;
+        }
+        if (wasDrag) {
+            /* 拖拽：浏览器仍会在 pointerup 后补发原生 click，临时拦掉它以免误当成「点击打开面板」 */
+            armBadgeDragClickGuard();
         }
         /* 未拖动：打开面板交给随后的 click 阶段处理——让浮标在整个 click 派发期间保持可见，
            面板打开延后到 click 之后，两者不会互相误接同一次 click */
@@ -10351,16 +10753,13 @@ function initBadgeInteraction() {
     badgeEl.addEventListener('click', (e) => {
         /* 兜底：若拖拽后的 click 未被上游拦掉（极少数），这里再拦一次 */
         if (badgeSuppressNextClick) return;
-        setTimeout(() => {
-            if (preferences.badgeDefault) showPanel();
-            else togglePanelWindow();
-        }, 0);
+        setTimeout(() => showPanel({ resetPosition: true }), 0);
     });
 }
 
 function makeDraggable(el) {
     const header = el.querySelector('.rlog-panel-header');
-    if (!header) return;
+    if (!header) return null;
 
     let startX, startY, origX, origY;
     let dragPending = false;
@@ -10427,17 +10826,31 @@ function makeDraggable(el) {
         prepareDrag(e.touches[0].clientX, e.touches[0].clientY);
     });
 
-    document.addEventListener('mousemove', (e) => {
+    function handleDragMouseMove(e) {
         moveDrag(e.clientX, e.clientY);
-    });
+    }
 
-    document.addEventListener('touchmove', (e) => {
+    function handleDragTouchMove(e) {
         if (moveDrag(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault();
-    }, { passive: false });
+    }
 
-    document.addEventListener('mouseup', finishDrag);
-    document.addEventListener('touchend', finishDrag);
-    document.addEventListener('touchcancel', finishDrag);
+    return {
+        bind() {
+            document.addEventListener('mousemove', handleDragMouseMove);
+            document.addEventListener('touchmove', handleDragTouchMove, { passive: false });
+            document.addEventListener('mouseup', finishDrag);
+            document.addEventListener('touchend', finishDrag);
+            document.addEventListener('touchcancel', finishDrag);
+        },
+        unbind() {
+            document.removeEventListener('mousemove', handleDragMouseMove);
+            document.removeEventListener('touchmove', handleDragTouchMove, { passive: false });
+            document.removeEventListener('mouseup', finishDrag);
+            document.removeEventListener('touchend', finishDrag);
+            document.removeEventListener('touchcancel', finishDrag);
+            finishDrag();
+        },
+    };
 }
 
 /* ── 初始化 ──────────────────────────── */
@@ -10545,12 +10958,12 @@ window.__RLogApi = {
         };
         records.unshift(demoRecord);
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     removeDemo: () => {
         records = records.filter(r => !r.isDemo);
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     openDrawer: () => {
         setMoreDrawerOpen(true);
@@ -10574,7 +10987,7 @@ window.__RLogApi = {
         filterState = state && typeof state === 'object' ? state : createDefaultFilterState();
         updateFilterChipUI();
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     /* 重置筛选（供引导/回归测试/外部调用）：引导开始时用它把筛选重置为全开以展示 demo，故不落盘；
        用户手动重置走界面按钮 resetFilters()（默认持久化） */
@@ -10587,7 +11000,7 @@ window.__RLogApi = {
         /* 只裁剪超出普通上限的普通记录；置顶记录保留（引导恢复的暂存记录可能使总数超限） */
         pruneNormalRecords();
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     /* 引导状态控制（供 tour.js 使用）：引导期间新记录暂存、不显示 */
     setTourActive: (active) => {
@@ -10604,7 +11017,7 @@ window.__RLogApi = {
             records[0].collapsed = false;
             records[0].messages.forEach(m => m.collapsed = false);
             panelContentDirty = true;
-            if (panelEl && isPanelVisible) renderPanelContent();
+            if (panelEl && isPanelExpanded) renderPanelContent();
         }
     },
     prepareDemoPreview: () => {
@@ -10616,20 +11029,20 @@ window.__RLogApi = {
         );
         if (previewMessage) previewMessage.collapsed = false;
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     collapseDemo: () => {
         if (records.length > 0) {
             records[0].collapsed = true;
             records[0].messages.forEach(m => m.collapsed = true);
             panelContentDirty = true;
-            if (panelEl && isPanelVisible) renderPanelContent();
+            if (panelEl && isPanelExpanded) renderPanelContent();
         }
     },
     forcePreview: (state) => {
         forcePreviewState = state ? true : null;
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
     },
     /* 偏好设置（供测试/后续迭代使用） */
     openPreferences: () => openPrefPanel(),
@@ -10756,7 +11169,7 @@ window.__RLogApi.injectTokenTierTest = function injectTokenTierTest() {
         records.unshift(...tierRecords);
         records.unshift(failRecord, successRecord);
         panelContentDirty = true;
-        if (panelEl && isPanelVisible) renderPanelContent();
+        if (panelEl && isPanelExpanded) renderPanelContent();
 
         /* 触发超时模拟：真实 2 秒超时收尾，addRecord 会把超时记录置顶并折叠其它记录 */
         if (window.__RLogApi && typeof window.__RLogApi.simulateReplyTimeout === 'function') {
@@ -10788,6 +11201,8 @@ window.__RLogApi.simulateReplyTimeout = function simulateReplyTimeout(opts = {})
             httpStatus: null,
             upstreamMeta: [],
             upstreamMetaByPath: new Map(),
+            rawResponseText: '',
+            toolCalls: new Map(),
             timer: null,
             expireTimer: null,
             status: null,
@@ -11079,6 +11494,7 @@ function buildSimulatePromptButton(panelEl) {
         clearSimulateButtonIntent();
         const seq = ++simulateButtonIntentSeq;
         simulateButtonIntent = { action: simulatePromptRunning ? 'stop' : 'start', seq };
+        bindSimulateButtonIntentDismissal();
         const cleanup = () => {
             window.removeEventListener('pointerup', onPointerUp);
             window.removeEventListener('pointercancel', onPointerCancel);
@@ -11104,21 +11520,6 @@ function buildSimulatePromptButton(panelEl) {
     /* 拖出按钮即视为放弃本次点击；即使之后在别处松开，也不会把停止意图留给下一次点击。 */
     btn.addEventListener('pointerleave', () => clearSimulateButtonIntent());
 
-    /* 点击按钮外部时立即兜底清理；正常情况下 pointerleave/pointerup 也会处理。 */
-    if (!document.rlogSimulateIntentOutsideListenerInstalled) {
-        document.rlogSimulateIntentOutsideListenerInstalled = true;
-        document.addEventListener('click', (e) => {
-            if (!simulateButtonIntent) return;
-            const currentButton = panelEl ? panelEl.querySelector('#rlog-simulate-btn') : null;
-            if (!currentButton || !e.composedPath().includes(currentButton)) {
-                clearSimulateButtonIntent();
-            }
-        }, true);
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState !== 'visible') clearSimulateButtonIntent();
-        });
-    }
-
     btn.addEventListener('click', (e) => {
         /* 拦住冒泡：点击事件会穿透影子根、被 document 上的「点外部收起抽屉」监听当成面板外点击 */
         e.stopPropagation();
@@ -11143,6 +11544,34 @@ function buildSimulatePromptButton(panelEl) {
     });
 }
 
+/* 点击按钮外部时立即清除当前指针意图；只在意图有效期间注册。 */
+function handleSimulateButtonIntentOutsideClick(e) {
+    if (!simulateButtonIntent) return;
+    const currentButton = panelEl ? panelEl.querySelector('#rlog-simulate-btn') : null;
+    if (!currentButton || !e.composedPath().includes(currentButton)) {
+        clearSimulateButtonIntent();
+    }
+}
+
+/* 页面隐藏会中断当前点击交互，清理意图与生命周期监听。 */
+function handleSimulateButtonIntentVisibilityChange() {
+    if (document.visibilityState !== 'visible') clearSimulateButtonIntent();
+}
+
+function bindSimulateButtonIntentDismissal() {
+    if (simulateButtonIntentDismissalBound) return;
+    simulateButtonIntentDismissalBound = true;
+    document.addEventListener('click', handleSimulateButtonIntentOutsideClick, true);
+    document.addEventListener('visibilitychange', handleSimulateButtonIntentVisibilityChange);
+}
+
+function unbindSimulateButtonIntentDismissal() {
+    if (!simulateButtonIntentDismissalBound) return;
+    simulateButtonIntentDismissalBound = false;
+    document.removeEventListener('click', handleSimulateButtonIntentOutsideClick, true);
+    document.removeEventListener('visibilitychange', handleSimulateButtonIntentVisibilityChange);
+}
+
 function scheduleSimulateButtonIntentClear(seq) {
     if (simulateButtonIntentTimer !== null) clearTimeout(simulateButtonIntentTimer);
     simulateButtonIntentTimer = setTimeout(() => {
@@ -11158,6 +11587,7 @@ function clearSimulateButtonIntent(seq = null) {
         clearTimeout(simulateButtonIntentTimer);
         simulateButtonIntentTimer = null;
     }
+    unbindSimulateButtonIntentDismissal();
 }
 
 /* 模拟按钮状态：空闲显示原图标，运行中保持可点击并切换为停止图标。 */

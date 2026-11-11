@@ -825,11 +825,6 @@
     padding-bottom: 6px;
 }
 
-/* 窗口折叠态（现为「浮标态」）：面板由 JS 设为 inline display:none 收起，此规则让状态自洽 */
-#rlog-panel.rlog-window-collapsed {
-    display: none;
-}
-
 /* ── 插件关闭状态遮罩（不阻挡交互） ────────── */
 .rlog-disabled .rlog-panel-body::after {
     content: "";
@@ -1678,6 +1673,28 @@ mark.rlog-search-mark-current {
     line-height: 1;
 }
 
+.rmsg-tool-name {
+    min-width: 0;
+    max-width: 26%;
+    overflow: hidden;
+    color: var(--rlog-text-muted);
+    font-size: 11px;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rmsg-tool-id {
+    min-width: 0;
+    max-width: 34%;
+    overflow: hidden;
+    color: var(--rlog-text-muted);
+    font-size: 11px;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .rmsg-tokens {
     font-size: 11px;
     font-family: inherit; /* 不使用等宽字体 */
@@ -1822,13 +1839,13 @@ mark.rlog-search-mark-current {
     display: flex;
     align-items: center;
     gap: 4px;
-    color: var(--rlog-text-faint);
+    color: var(--rlog-text-muted);
     line-height: 1.3;
     white-space: nowrap;
 }
 .rmsg-response-metrics {
     min-width: 0;
-    font-size: clamp(9.5px, 3.4cqi, 11px);
+    font-size: clamp(10px, 3.4cqi, 11px);
     font-variant-numeric: tabular-nums;
     /* 先按标题栏宽度缩字号；极窄时仍放不下则自然换行，不把末项直接省略掉 */
     white-space: normal;
@@ -3100,6 +3117,14 @@ mark.rlog-search-mark-current {
     .rmsg-role-badge {
         font-size: 11px;
         padding: 0;
+    }
+    .rmsg-tool-name {
+        max-width: 22%;
+        font-size: 10px;
+    }
+    .rmsg-tool-id {
+        max-width: 30%;
+        font-size: 10px;
     }
     .rmsg-tokens { font-size: 10px; }
     .rmsg-copy-btn,
